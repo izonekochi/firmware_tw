@@ -1,0 +1,56 @@
+#ifdef MESHTASTIC_INCLUDE_INKHUD
+
+#include "configuration.h"
+
+#include "graphics/niche/Drivers/Backlight/LatchingBacklight.h"
+#include "graphics/niche/InkHUD/InkHUD.h"
+#include "graphics/niche/InkHUD/Persistence.h"
+#include "graphics/niche/InkHUD/SystemApplet.h"
+
+#include "Channels.h"
+#include "concurrency/OSThread.h"
+
+namespace NicheGraphics::InkHUD {
+
+class Applet;
+
+class InputMenuApplet : public SystemApplet, public concurrency::OSThread {
+  public:
+    InputMenuApplet();
+    void onForeground() override;
+    void onBackground() override;
+    void onButtonShortPress() override;
+    void onButtonLongPress() override;
+    void onRender() override;
+
+    void show(Tile *t, Tile *neighborTile = nullptr); // Open the simple input applet, onto a user tile
+
+    using Key = std::tuple<std::string, int16_t>;
+    using Keyboard = std::tuple<std::string, std::vector<std::vector<Key>>>;
+    using SendTarget = std::tuple<std::string, uint32_t>;
+
+  protected:
+    std::vector<Keyboard> keyboards;
+    std::vector<SendTarget> sendTargets;
+    std::string currentInput, currentCIM;
+    std::vector<int16_t> currentCIMKeys;
+    std::vector<std::string> currentCIMResults;
+    int16_t selMode = 0, selKB = -1, selRow = -1, selCol = -1, selResult = -1, selTarget = -1;
+
+    uint32_t autoHideMillis = 0;
+
+    Drivers::LatchingBacklight *backlight = nullptr; // Convenient access to the backlight singleton
+    
+    int32_t runOnce() override;
+
+    void handleKeyboardPress();
+
+    void sendText(NodeNum dest, ChannelIndex channel, const std::string& message); // Send a text message to mesh
+
+    Applet *borrowedTileOwner = nullptr;
+    Applet *neighborTileOwner = nullptr;
+};
+
+} // namespace NicheGraphics::InkHUD
+
+#endif

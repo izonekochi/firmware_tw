@@ -90,12 +90,21 @@ void InkHUD::BatteryIconApplet::onRender()
     const int16_t sliceL = bodyL + slicePad;
     const int16_t sliceT = bodyT + slicePad;
     const uint16_t sliceH = bodyH - (slicePad * 2);
+#if defined(MOD_MESHPOCKET)
+    uint16_t sliceW0 = bodyW - (slicePad * 2);
+
+    uint16_t sliceW = (sliceW0 * socRounded) / 100; // Apply percentage
+
+    hatchRegion(sliceL + sliceW0 - sliceW, sliceT, sliceW, sliceH, 2, BLACK);
+    drawRect(sliceL + sliceW0 - sliceW, sliceT, sliceW, sliceH, BLACK);
+#else //!defined(MOD_MESHPOCKET)
     uint16_t sliceW = bodyW - (slicePad * 2);
 
     sliceW = (sliceW * socRounded) / 100; // Apply percentage
 
     hatchRegion(sliceL, sliceT, sliceW, sliceH, 2, BLACK);
     drawRect(sliceL, sliceT, sliceW, sliceH, BLACK);
+#endif //defined(MOD_MESHPOCKET)
 }
 
 #endif

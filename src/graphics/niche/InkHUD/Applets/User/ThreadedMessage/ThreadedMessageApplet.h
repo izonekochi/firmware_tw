@@ -30,7 +30,11 @@ namespace NicheGraphics::InkHUD
 
 class Applet;
 
+#if defined(MOD_MESHPOCKET)
+class ThreadedMessageApplet : public Applet, public MeshModule
+#else //!defined(MOD_MESHPOCKET)
 class ThreadedMessageApplet : public Applet, public SinglePortModule
+#endif //defined(MOD_MESHPOCKET)
 {
   public:
     explicit ThreadedMessageApplet(uint8_t channelIndex);
@@ -45,12 +49,28 @@ class ThreadedMessageApplet : public Applet, public SinglePortModule
 
     bool approveNotification(Notification &n) override; // Which notifications to suppress
 
+#if defined(MOD_MESHPOCKET)
+    bool wantPacket(const meshtastic_MeshPacket *p) override;
+#endif //defined(MOD_MESHPOCKET)
+
+#if defined(MOD_INPUT_MENU)
+    uint8_t getChannelIndex() const { return channelIndex; }
+    void scrollUp();
+    void scrollDown();
+    void scrollToEnd();
+#endif //defined(MOD_INPUT_MENU)
+
   protected:
     void saveMessagesToFlash();
     void loadMessagesFromFlash();
 
     MessageStore *store; // Messages, held in RAM for use, ready to save to flash on shutdown
     uint8_t channelIndex = 0;
+
+#if defined(MOD_INPUT_MENU)
+    uint8_t beginMsgIndex = 0;
+#endif //defined(MOD_INPUT_MENU)
+
 };
 
 } // namespace NicheGraphics::InkHUD

@@ -5,6 +5,9 @@
 #include "./Applets/System/BatteryIcon/BatteryIconApplet.h"
 #include "./Applets/System/Logo/LogoApplet.h"
 #include "./Applets/System/Menu/MenuApplet.h"
+#if defined(MOD_INPUT_MENU)
+#include "./Applets/System/InputMenu/InputMenuApplet.h"
+#endif //defined(MOD_INPUT_MENU)
 #include "./Applets/System/Notification/NotificationApplet.h"
 #include "./Applets/System/Pairing/PairingApplet.h"
 #include "./Applets/System/Placeholder/PlaceholderApplet.h"
@@ -80,6 +83,16 @@ void InkHUD::WindowManager::nextTile()
         menu->sendToBackground();
         menuWasOpen = true;
     }
+#if defined(MOD_INPUT_MENU)
+    bool inputMenuWasOpen = false;
+    if (!menuWasOpen) {
+        InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
+        if (inputMenu->isForeground()) {
+            inputMenu->sendToBackground();
+            inputMenuWasOpen = true;
+        }
+    }
+#endif //defined(MOD_INPUT_MENU)
 
     // Swap to next tile
     settings->userTiles.focused = (settings->userTiles.focused + 1) % settings->userTiles.count;
@@ -89,6 +102,18 @@ void InkHUD::WindowManager::nextTile()
 
     if (menuWasOpen)
         menu->show(userTiles.at(settings->userTiles.focused));
+#if defined(MOD_INPUT_MENU)
+    else if (inputMenuWasOpen) {
+        if (settings->userTiles.count == 1 && strncmp(userTiles.at(settings->userTiles.focused)->getAssignedApplet()->name, "Channel ", 8) == 0) {
+            InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
+            inputMenu->show(userTiles.at(settings->userTiles.focused), nullptr);
+        }
+        else if (settings->userTiles.count == 2 && strncmp(userTiles.at(1 - settings->userTiles.focused)->getAssignedApplet()->name, "Channel ", 8) == 0) {
+            InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
+            inputMenu->show(userTiles.at(settings->userTiles.focused), userTiles.at(1 - settings->userTiles.focused));
+        }
+    }
+#endif //defined(MOD_INPUT_MENU)
 
     // Ask the tile to draw an indicator showing which tile is now focused
     // Requests a render
@@ -102,8 +127,23 @@ void InkHUD::WindowManager::nextTile()
 // The applet previously displayed there will be restored once the menu closes
 void InkHUD::WindowManager::openMenu()
 {
+#if defined(MOD_INPUT_MENU)
+    if (settings->userTiles.count == 1 && strncmp(userTiles.at(settings->userTiles.focused)->getAssignedApplet()->name, "Channel ", 8) == 0) {
+        InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
+        inputMenu->show(userTiles.at(settings->userTiles.focused), nullptr);
+    }
+    else if (settings->userTiles.count == 2 && strncmp(userTiles.at(1 - settings->userTiles.focused)->getAssignedApplet()->name, "Channel ", 8) == 0) {
+        InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
+        inputMenu->show(userTiles.at(settings->userTiles.focused), userTiles.at(1 - settings->userTiles.focused));
+    }
+    else {
+        MenuApplet *menu = (MenuApplet *)inkhud->getSystemApplet("Menu");
+        menu->show(userTiles.at(settings->userTiles.focused));
+    }
+#else //!defined(MOD_INPUT_MENU)
     MenuApplet *menu = (MenuApplet *)inkhud->getSystemApplet("Menu");
     menu->show(userTiles.at(settings->userTiles.focused));
+#endif //defined(MOD_INPUT_MENU)
 }
 
 // On the currently focussed tile: cycle to the next available user applet
@@ -215,6 +255,24 @@ void InkHUD::WindowManager::changeLayout()
         Tile *ft = userTiles.at(settings->userTiles.focused);
         menu->show(ft);
     }
+#if defined(MOD_INPUT_MENU)
+    else {
+        InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
+        if (inputMenu->isForeground()) {
+            if (settings->userTiles.count == 1 && strncmp(userTiles.at(settings->userTiles.focused)->getAssignedApplet()->name, "Channel ", 8) == 0) {
+                InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
+                inputMenu->show(userTiles.at(settings->userTiles.focused), nullptr);
+            }
+            else if (settings->userTiles.count == 2 && strncmp(userTiles.at(1 - settings->userTiles.focused)->getAssignedApplet()->name, "Channel ", 8) == 0) {
+                InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
+                inputMenu->show(userTiles.at(settings->userTiles.focused), userTiles.at(1 - settings->userTiles.focused));
+            }
+            else {
+                inputMenu->sendToBackground();
+            }
+        }
+    }
+#endif //defined(MOD_INPUT_MENU)
 
     // Force-render
     // - redraw all applets
@@ -340,6 +398,10 @@ void InkHUD::WindowManager::createSystemApplets()
     addSystemApplet("Tips", new TipsApplet, new Tile);
 
     addSystemApplet("Menu", new MenuApplet, nullptr);
+
+#if defined(MOD_INPUT_MENU)
+    addSystemApplet("InputMenu", new InputMenuApplet, nullptr);
+#endif //defined(MOD_INPUT_MENU)
 
     // Battery and notifications *behind* the menu
     addSystemApplet("Notification", new NotificationApplet, new Tile);

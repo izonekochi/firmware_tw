@@ -13,8 +13,16 @@ using namespace NicheGraphics;
 constexpr uint8_t MAX_MESSAGES_SAVED = 10;
 constexpr uint32_t MAX_MESSAGE_SIZE = 250;
 
+#if defined(MOD_MESHPOCKET)
+
+#include "mesh/generated/meshtastic/storeforward.pb.h"
+
+InkHUD::ThreadedMessageApplet::ThreadedMessageApplet(uint8_t channelIndex)
+    : MeshModule("ThreadedMessageApplet"), channelIndex(channelIndex)
+#else //!defined(MOD_MESHPOCKET)
 InkHUD::ThreadedMessageApplet::ThreadedMessageApplet(uint8_t channelIndex)
     : SinglePortModule("ThreadedMessageApplet", meshtastic_PortNum_TEXT_MESSAGE_APP), channelIndex(channelIndex)
+#endif //defined(MOD_MESHPOCKET)
 {
     // Create the message store
     // Will shortly attempt to load messages from RAM, if applet is active
@@ -30,7 +38,11 @@ void InkHUD::ThreadedMessageApplet::onRender()
 
     // Header text
     std::string headerText;
+#if defined(MOD_INPUT_MENU)
+    headerText += "CH";
+#else //!defined(MOD_INPUT_MENU)
     headerText += "Channel ";
+#endif //defined(MOD_INPUT_MENU)
     headerText += to_string(channelIndex);
     headerText += ": ";
     if (channels.isDefaultChannel(channelIndex))
@@ -61,7 +73,11 @@ void InkHUD::ThreadedMessageApplet::onRender()
     const uint16_t msgW = (msgR - msgL) + 1;
 
     int16_t msgB = height() - 1; // Vertical cursor for drawing. Messages are bottom-aligned to this value.
+#if defined(MOD_INPUT_MENU)
+    uint8_t i = beginMsgIndex;   // Index of stored message
+#else //!defined(MOD_INPUT_MENU)
     uint8_t i = 0;               // Index of stored message
+#endif //defined(MOD_INPUT_MENU)
 
     // Loop over messages
     // - until no messages left, or
@@ -160,10 +176,16 @@ void InkHUD::ThreadedMessageApplet::onRender()
     // Make text appear to pass behind the header
     hatchRegion(0, dividerY + 1, width(), fontSmall.lineHeight() / 3, 2, WHITE);
 
+#if defined(MOD_INPUT_MENU)
+    // keep some messages since we can scroll up using InputMenu
+    while (store->messages.size() > 50)
+        store->messages.pop_back();
+#else //!defined(MOD_INPUT_MENU)
     // If we've run out of screen to draw messages, we can drop any leftover data from the queue
     // Those messages have been pushed off the screen-top by newer ones
     while (i < store->messages.size())
         store->messages.pop_back();
+#endif //defined(MOD_INPUT_MENU)
 }
 
 // Code which runs when the applet begins running
@@ -194,6 +216,41 @@ ProcessMessage InkHUD::ThreadedMessageApplet::handleReceived(const meshtastic_Me
     if (mp.channel != this->channelIndex)
         return ProcessMessage::CONTINUE;
 
+#if defined(MOD_MESHPOCKET)
+    if (mp.decoded.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP) {
+        // Abort if message was a DM
+        if (mp.to != NODENUM_BROADCAST)
+            return ProcessMessage::CONTINUE;
+
+        // Extract info into our slimmed-down "StoredMessage" type
+        MessageStore::Message newMessage;
+        newMessage.timestamp = getValidTime(RTCQuality::RTCQualityDevice, true); // Current RTC time
+        newMessage.sender = mp.from;
+        newMessage.channelIndex = mp.channel;
+        newMessage.text = std::string((const char *)mp.decoded.payload.bytes, mp.decoded.payload.size);// + "\nhop:" + std::to_string(mp.hop_limit) + "/" + std::to_string(mp.hop_start) + " " + std::to_string((int)mp.rx_snr) + "." + std::to_string((int)(mp.rx_snr * 10) % 10) + "/" + std::to_string(mp.rx_rssi);
+
+        // Store newest message at front
+        // These records are used when rendering, and also stored in flash at shutdown
+        store->messages.push_front(newMessage);
+    }
+    else if (mp.decoded.portnum == meshtastic_PortNum_STORE_FORWARD_APP) {
+        meshtastic_StoreAndForward sf = meshtastic_StoreAndForward_init_zero;
+        if (pb_decode_from_bytes(mp.decoded.payload.bytes, mp.decoded.payload.size, &meshtastic_StoreAndForward_msg, &sf)) {
+            if (sf.which_variant == meshtastic_StoreAndForward_text_tag && sf.rr == meshtastic_StoreAndForward_RequestResponse_ROUTER_TEXT_BROADCAST) {
+                // Extract info into our slimmed-down "StoredMessage" type
+                MessageStore::Message newMessage;
+                newMessage.timestamp = mp.rx_time; // Current RTC time
+                newMessage.sender = mp.from;
+                newMessage.channelIndex = mp.channel;
+                newMessage.text = std::string((const char *)sf.variant.text.bytes, sf.variant.text.size) + std::string("✉");
+
+                // Store newest message at front
+                // These records are used when rendering, and also stored in flash at shutdown
+                store->messages.push_front(newMessage);
+            }
+        }
+    }
+#else //!defined(MOD_MESHPOCKET)
     // Abort if message was a DM
     if (mp.to != NODENUM_BROADCAST)
         return ProcessMessage::CONTINUE;
@@ -208,6 +265,7 @@ ProcessMessage InkHUD::ThreadedMessageApplet::handleReceived(const meshtastic_Me
     // Store newest message at front
     // These records are used when rendering, and also stored in flash at shutdown
     store->messages.push_front(newMessage);
+#endif //defined(MOD_MESHPOCKET)
 
     // If this was an incoming message, suggest that our applet becomes foreground, if permitted
     if (getFrom(&mp) != nodeDB->getNodeNum())
@@ -231,6 +289,41 @@ bool InkHUD::ThreadedMessageApplet::approveNotification(Notification &n)
     else
         return true;
 }
+
+#if defined(MOD_MESHPOCKET)
+bool InkHUD::ThreadedMessageApplet::wantPacket(const meshtastic_MeshPacket *p)
+{
+    if (p->decoded.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP)
+        return true;
+    else if (p->decoded.portnum == meshtastic_PortNum_STORE_FORWARD_APP)
+        return true;
+    return false;
+}
+#endif //defined(MOD_MESHPOCKET)
+
+#if defined(MOD_INPUT_MENU)
+void InkHUD::ThreadedMessageApplet::scrollUp()
+{
+    if (beginMsgIndex < store->messages.size() - 1) {
+        beginMsgIndex++;
+        requestUpdate(Drivers::EInk::UpdateTypes::FAST);
+    }
+}
+
+void InkHUD::ThreadedMessageApplet::scrollDown()
+{
+    if (beginMsgIndex > 0) {
+        beginMsgIndex--;
+        requestUpdate(Drivers::EInk::UpdateTypes::FAST);
+    }
+}
+
+void InkHUD::ThreadedMessageApplet::scrollToEnd()
+{
+    beginMsgIndex = 0;
+    requestUpdate(Drivers::EInk::UpdateTypes::FAST);
+}
+#endif //defined(MOD_INPUT_MENU)
 
 // Save several recent messages to flash
 // Stores the contents of ThreadedMessageApplet::messages

@@ -26,6 +26,9 @@ class AppletFont
         WINDOWS_1250,
         WINDOWS_1251,
         WINDOWS_1252,
+#if defined(MOD_CJK_ENABLED)
+        CJK_UTF8,
+#endif //defined(MOD_CJK_ENABLED)
     };
 
     AppletFont();

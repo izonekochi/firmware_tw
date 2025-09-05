@@ -114,6 +114,15 @@ class Applet : public GFX
 
     void setFont(AppletFont f);
     AppletFont getFont();
+#if defined(MOD_CJK_ENABLED)
+    void drawCharCJK(int16_t x, int16_t y, uint16_t code, uint16_t color, uint16_t bg, uint8_t size_x, uint8_t size_y);
+    size_t writeCJK(const uint8_t *buffer, int numChars);
+    size_t write(const uint8_t *buffer, size_t size) override;
+    int getUTF8Chars(const uint8_t* ptr) const;
+    uint32_t getUTF8Unicode(const uint8_t* ptr) const;
+    void charBoundsCJK(const uint8_t* ptr, int numChars, int16_t *x, int16_t *y, int16_t *minx, int16_t *miny, int16_t *maxx, int16_t *maxy);
+    void getTextBoundsCJK(const uint8_t *string, int16_t x, int16_t y, int16_t *x1, int16_t *y1, uint16_t *w, uint16_t *h);
+#endif //defined(MOD_CJK_ENABLED)
     uint16_t getTextWidth(std::string text);
     uint16_t getTextWidth(const char *text);
     uint32_t getWrappedTextHeight(int16_t left, uint16_t width, std::string text); // Result of printWrapped

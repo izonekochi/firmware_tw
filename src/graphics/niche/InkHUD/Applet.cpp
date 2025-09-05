@@ -6,6 +6,10 @@
 
 #include "RTC.h"
 
+#if defined(MOD_CJK_ENABLED)
+#include "graphics/niche/Fonts/cubicFont.h"
+#endif //defined(MOD_CJK_ENABLED)
+
 using namespace NicheGraphics;
 
 InkHUD::AppletFont InkHUD::Applet::fontLarge; // General purpose fonts. Set in nicheGraphics.h
@@ -261,13 +265,227 @@ uint16_t InkHUD::Applet::Y(float f)
     return height() * f;
 }
 
+#if defined(MOD_CJK_ENABLED)
+void InkHUD::Applet::drawCharCJK(int16_t x, int16_t y, uint16_t code, uint16_t color, uint16_t bg, uint8_t size_x, uint8_t size_y)
+{
+    GFXglyph *glyph = gfxFont->glyph + code;
+    uint8_t *bitmap = gfxFont->bitmap;
+    for (int i = 0; i < OVERFLOW_TABLE_SIZE && code >= overflowTable[i]; i++) {
+        if (i == OVERFLOW_TABLE_SIZE - 1) { // real overflow
+            bitmap = gfxFont->bitmap;
+            break;
+        }
+        bitmap += 0x10000;
+    }
+
+    uint16_t bo = pgm_read_word(&glyph->bitmapOffset);
+    uint8_t w = pgm_read_byte(&glyph->width), h = pgm_read_byte(&glyph->height);
+    int8_t xo = pgm_read_byte(&glyph->xOffset), yo = pgm_read_byte(&glyph->yOffset);
+    uint8_t xx, yy, bits = 0, bit = 0;
+    int16_t xo16 = 0, yo16 = 0;
+
+    if (size_x > 1 || size_y > 1) {
+      xo16 = xo;
+      yo16 = yo;
+    }
+
+    for (yy = 0; yy < h; yy++) {
+      for (xx = 0; xx < w; xx++) {
+        if (!(bit++ & 7)) {
+          bits = pgm_read_byte(&bitmap[bo++]);
+        }
+        if (bits & 0x80) {
+          if (size_x == 1 && size_y == 1) {
+            drawPixel(x + xo + xx, y + yo + yy, color);
+          } else {
+            fillRect(x + (xo16 + xx) * size_x, y + (yo16 + yy) * size_y,
+                          size_x, size_y, color);
+          }
+        }
+        bits <<= 1;
+      }
+    }
+}
+
+size_t InkHUD::Applet::writeCJK(const uint8_t *buffer, int numChars)
+{
+  if (!gfxFont) { // 'Classic' built-in font
+    if (*buffer == '\n') {              // Newline?
+      cursor_x = 0;               // Reset x to zero,
+      cursor_y += textsize_y * 8; // advance y one line
+    } else if (*buffer != '\r') {       // Ignore carriage returns
+      if (wrap && ((cursor_x + textsize_x * 6) > _width)) { // Off right?
+        cursor_x = 0;                                       // Reset x to zero,
+        cursor_y += textsize_y * 8; // advance y one line
+      }
+      drawChar(cursor_x, cursor_y, *buffer, textcolor, textbgcolor, textsize_x, textsize_y);
+      cursor_x += textsize_x * 6; // Advance x one char
+    }
+
+  } else { // Custom font
+
+    if (*buffer == '\n') {
+      cursor_x = 0;
+      cursor_y += (int16_t)textsize_y * (uint8_t)pgm_read_byte(&gfxFont->yAdvance);
+    } else if (*buffer != '\r') {
+      uint16_t first = pgm_read_word(&gfxFont->first);
+      int16_t code = lookup(buffer, numChars);
+      if (code > 0 && ((uint16_t)code >= first) && ((uint16_t)code <= pgm_read_word(&gfxFont->last))) {
+        GFXglyph *glyph = gfxFont->glyph + ((uint16_t)code - first);
+        uint8_t w = pgm_read_byte(&glyph->width), h = pgm_read_byte(&glyph->height);
+        if ((w > 0) && (h > 0)) { // Is there an associated bitmap?
+          int16_t xo = (int8_t)pgm_read_byte(&glyph->xOffset); // sic
+          if (wrap && ((cursor_x + textsize_x * (xo + w)) > _width)) {
+            cursor_x = 0;
+            cursor_y += (int16_t)textsize_y * (uint8_t)pgm_read_byte(&gfxFont->yAdvance);
+          }
+          drawCharCJK(cursor_x, cursor_y, code, textcolor, textbgcolor, textsize_x, textsize_y);
+        }
+        cursor_x += (uint8_t)pgm_read_byte(&glyph->xAdvance) * (int16_t)textsize_x;
+      }
+    }
+  }
+  return numChars;
+}
+
+size_t InkHUD::Applet::write(const uint8_t *buffer, size_t size)
+{
+#if 0
+    return GFX::write(buffer, size);
+#else
+    size_t n = 0;
+    while (size > 0) {
+        const int numChars = getUTF8Chars(buffer);
+        if (numChars > 0 && size >= (size_t)numChars) {
+            const size_t numWrite = writeCJK(buffer, numChars);
+            buffer += numChars;
+            n += numWrite;
+            size -= numChars;
+        }
+        else
+            return -1;
+    }
+    return n;
+#endif
+}
+
+int InkHUD::Applet::getUTF8Chars(const uint8_t* ptr) const
+{
+    const uint8_t ch = *ptr;
+    return (ch & 0x80) == 0x00 ? 1 : ((ch & 0xE0) == 0xC0 ? 2 : ((ch & 0xF0) == 0xE0 ? 3 : ((ch & 0xF8) == 0xF0 ? 4 : -1)));
+}
+
+uint32_t InkHUD::Applet::getUTF8Unicode(const uint8_t* ptr) const
+{
+    const uint8_t first_byte = *ptr;
+    if ((first_byte & 0x80) == 0x00) { // 1-byte character (ASCII)
+        return first_byte;
+    } else if ((first_byte & 0xE0) == 0xC0) { // 2-byte character
+        return ((first_byte & 0x1F) << 6) | (ptr[1] & 0x3F);
+    } else if ((first_byte & 0xF0) == 0xE0) { // 3-byte character
+        return ((first_byte & 0x0F) << 12) | ((ptr[1] & 0x3F) << 6) | (ptr[2] & 0x3F);
+    } else if ((first_byte & 0xF8) == 0xF0) { // 4-byte character
+        return ((first_byte & 0x07) << 18) | ((ptr[1] & 0x3F) << 12) | ((ptr[2] & 0x3F) << 6) | (ptr[3] & 0x3F);
+    }
+    return 0;
+}
+
+void InkHUD::Applet::charBoundsCJK(const uint8_t* ptr, const int numChars, int16_t *x, int16_t *y, int16_t *minx, int16_t *miny, int16_t *maxx, int16_t *maxy) 
+{
+  if (gfxFont) {
+    if (numChars == 1 && *ptr == '\n') { // Newline?
+      *x = 0;        // Reset x to zero, advance y by one line
+      *y += textsize_y * (uint8_t)pgm_read_byte(&gfxFont->yAdvance);
+    } else if (numChars > 1 || *ptr != '\r') { // Not a carriage return; is normal char
+      uint16_t first = pgm_read_word(&gfxFont->first);
+      int16_t code = lookup(ptr, numChars);
+      if (code > 0 && ((uint16_t)code >= first) && ((uint16_t)code <= pgm_read_word(&gfxFont->last))) {
+        GFXglyph *glyph = gfxFont->glyph + (*ptr - first);
+        uint8_t gw = pgm_read_byte(&glyph->width), gh = pgm_read_byte(&glyph->height), xa = pgm_read_byte(&glyph->xAdvance);
+        int8_t xo = pgm_read_byte(&glyph->xOffset), yo = pgm_read_byte(&glyph->yOffset);
+        if (wrap && ((*x + (((int16_t)xo + gw) * textsize_x)) > _width)) {
+          *x = 0; // Reset x to zero, advance y by one line
+          *y += textsize_y * (uint8_t)pgm_read_byte(&gfxFont->yAdvance);
+        }
+        int16_t tsx = (int16_t)textsize_x, tsy = (int16_t)textsize_y,
+                x1 = *x + xo * tsx, y1 = *y + yo * tsy, x2 = x1 + gw * tsx - 1,
+                y2 = y1 + gh * tsy - 1;
+        if (x1 < *minx)
+          *minx = x1;
+        if (y1 < *miny)
+          *miny = y1;
+        if (x2 > *maxx)
+          *maxx = x2;
+        if (y2 > *maxy)
+          *maxy = y2;
+        *x += xa * tsx;
+      }
+    }
+
+  } else { // Default font
+
+    if (*ptr == '\n') {        // Newline?
+      *x = 0;               // Reset x to zero,
+      *y += textsize_y * 8; // advance y one line
+      // min/max x/y unchaged -- that waits for next 'normal' character
+    } else if (*ptr != '\r') { // Normal char; ignore carriage returns
+      if (wrap && ((*x + textsize_x * 6) > _width)) { // Off right?
+        *x = 0;                                       // Reset x to zero,
+        *y += textsize_y * 8;                         // advance y one line
+      }
+      int x2 = *x + textsize_x * 6 - 1, // Lower-right pixel of char
+          y2 = *y + textsize_y * 8 - 1;
+      if (x2 > *maxx)
+        *maxx = x2; // Track max x, y
+      if (y2 > *maxy)
+        *maxy = y2;
+      if (*x < *minx)
+        *minx = *x; // Track min x, y
+      if (*y < *miny)
+        *miny = *y;
+      *x += textsize_x * 6; // Advance x one char
+    }
+  }
+}
+
+void InkHUD::Applet::getTextBoundsCJK(const uint8_t *str, int16_t x, int16_t y, int16_t *x1, int16_t *y1, uint16_t *w, uint16_t *h) 
+{
+  *x1 = x;
+  *y1 = y;
+  *w = *h = 0;
+
+  int16_t minx = _width, miny = _height, maxx = -1, maxy = -1;
+
+  while (*str) {
+    int numChars = getUTF8Chars(str);
+    if (numChars <= 0)
+        break;
+    charBoundsCJK(str, numChars, &x, &y, &minx, &miny, &maxx, &maxy);
+    str += numChars;
+  }
+    
+  if (maxx >= minx) {
+    *x1 = minx;
+    *w = maxx - minx + 1;
+  }
+  if (maxy >= miny) {
+    *y1 = miny;
+    *h = maxy - miny + 1;
+  }
+}
+#endif //defined(MOD_CJK_ENABLED)
+
 // Print text, specifying the position of any edge / corner of the textbox
 void InkHUD::Applet::printAt(int16_t x, int16_t y, const char *text, HorizontalAlignment ha, VerticalAlignment va)
 {
     // We do still have to run getTextBounds to find the width
     int16_t textOffsetX, textOffsetY;
     uint16_t textWidth, textHeight;
+#if defined(MOD_CJK_ENABLED)
+    getTextBoundsCJK((uint8_t*)text, 0, 0, &textOffsetX, &textOffsetY, &textWidth, &textHeight);
+#else //!MOD_CJK_ENABLED
     getTextBounds(text, 0, 0, &textOffsetX, &textOffsetY, &textWidth, &textHeight);
+#endif //MOD_CJK_ENABLED
 
     int16_t cursorX = 0;
     int16_t cursorY = 0;
@@ -371,7 +589,11 @@ uint16_t InkHUD::Applet::getTextWidth(const char *text)
     // We do still have to run getTextBounds to find the width
     int16_t textOffsetX, textOffsetY;
     uint16_t textWidth, textHeight;
+#if defined(MOD_CJK_ENABLED)
+    getTextBoundsCJK((uint8_t*)text, 0, 0, &textOffsetX, &textOffsetY, &textWidth, &textHeight);
+#else //!MOD_CJK_ENABLED
     getTextBounds(text, 0, 0, &textOffsetX, &textOffsetY, &textWidth, &textHeight);
+#endif //MOD_CJK_ENABLED
 
     return textWidth;
 }
@@ -438,6 +660,87 @@ void InkHUD::Applet::printWrapped(int16_t left, int16_t top, uint16_t width, std
 
     // Move through our text, character by character
     uint16_t wordStart = 0;
+#if defined(MOD_CJK_ENABLED)
+    for (uint16_t i = 0; i < text.length(); ) {
+        const int numChars_i = getUTF8Chars((uint8_t*)text.c_str() + i);
+        if (numChars_i < 1)
+            break;
+        // Found: end of word (split by spaces or newline)
+        // Also handles end of string
+        if (numChars_i > 1 || text[i] == ' ' || text[i] == '\n' || (uint16_t)(i + 1) == (uint16_t)text.length()) {
+            // Isolate this word
+            uint16_t wordLength = (i - wordStart) + numChars_i; // Plus one. Imagine: "a". End - Start is 0, but length is 1
+            std::string word = text.substr(wordStart, wordLength);
+            wordStart = i + numChars_i; // Next word starts *after* the space
+
+            // If word is terminated by a newline char, don't actually print it.
+            // We'll manually add a new line later
+            if (numChars_i == 1 && word.back() == '\n')
+                word.pop_back();
+
+            // Measure the word, in px
+            int16_t l, t;
+            uint16_t w, h;
+            getTextBoundsCJK((uint8_t*)word.c_str(), getCursorX(), getCursorY(), &l, &t, &w, &h);
+
+            // Word is short
+            if (w < width) {
+                // Word fits on current line
+                if ((l + w + wSp) < left + width)
+                    print(word.c_str());
+
+                // Word doesn't fit on current line
+                else {
+                    setCursor(left, getCursorY() + getFont().lineHeight()); // Newline
+                    print(word.c_str());
+                }
+            }
+
+            // Word is really long
+            // (wider than applet)
+            else {
+                // Horribly inefficient:
+                // Rather than working directly with the glyph sizes,
+                // we're going to run everything through getTextBounds as a c-string of length 1
+                // This is because AdafruitGFX has special internal handling for their legacy 6x8 font,
+                // which would be a pain to add manually here.
+                // These super-long strings probably don't come up often so we can maybe tolerate this.
+
+                // Todo: rewrite making use of AdafruitGFX native text wrapping
+                int16_t l, t;
+                uint16_t w, h;
+                char cstr[5];
+                for (uint16_t c = 0; c < word.length(); ) {
+                    const int numChars = getUTF8Chars((uint8_t*)word.c_str() + c);
+                    // Shove next char into a c string
+                    for (int i = 0; i < 5; i++) {
+                        if (i < numChars)
+                            cstr[i] = word[c + i];
+                        else
+                            cstr[i] = 0;
+                    }
+                    getTextBoundsCJK((uint8_t*)cstr, getCursorX(), getCursorY(), &l, &t, &w, &h);
+
+                    // Manual newline, if next character will spill beyond screen edge
+                    if ((l + w) > left + width)
+                        setCursor(left, getCursorY() + getFont().lineHeight());
+
+                    // Print next character
+                    print(cstr);
+
+                    c += numChars;
+                }
+            }
+        }
+
+        // If word was terminated by a newline char, manually add the new line now
+        if (numChars_i == 1 && text[i] == '\n') {
+            setCursor(left, getCursorY() + getFont().lineHeight()); // Manual newline
+            wordStart = i + 1; // New word begins after the newline. Otherwise print will add an *extra* line
+        }
+        i += numChars_i;
+    }
+#else //!defined(MOD_CJK_ENABLED)
     for (uint16_t i = 0; i < text.length(); i++) {
 
         // Found: end of word (split by spaces or newline)
@@ -506,6 +809,7 @@ void InkHUD::Applet::printWrapped(int16_t left, int16_t top, uint16_t width, std
             wordStart = i + 1; // New word begins after the newline. Otherwise print will add an *extra* line
         }
     }
+#endif //defined(MOD_CJK_ENABLED)
 }
 
 // Simulate running printWrapped, to determine how tall the block of text will be.

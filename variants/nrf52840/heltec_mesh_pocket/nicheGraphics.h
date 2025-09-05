@@ -21,6 +21,10 @@
 #include "graphics/niche/Drivers/EInk/LCMEN2R13ECC1.h"
 #include "graphics/niche/Inputs/TwoButton.h"
 
+#ifdef MOD_CJK_ENABLED
+#include "graphics/niche/Fonts/cubicFont.h"
+#endif //MOD_CJK_ENABLED
+
 void setupNicheGraphics()
 {
     using namespace NicheGraphics;
@@ -50,9 +54,16 @@ void setupNicheGraphics()
     inkhud->setDisplayResilience(10, 1.5);
 
     // Select fonts
+#ifdef MOD_CJK_ENABLED
+    // use the same CJK font because of the limited storage size
+    InkHUD::Applet::fontLarge = InkHUD::AppletFont(cubicFont, InkHUD::AppletFont::CJK_UTF8);
+    InkHUD::Applet::fontMedium = InkHUD::AppletFont(cubicFont, InkHUD::AppletFont::CJK_UTF8);
+    InkHUD::Applet::fontSmall = InkHUD::AppletFont(cubicFont, InkHUD::AppletFont::CJK_UTF8);
+#else //!MOD_CJK_ENABLED
     InkHUD::Applet::fontLarge = FREESANS_12PT_WIN1252;
     InkHUD::Applet::fontMedium = FREESANS_9PT_WIN1252;
     InkHUD::Applet::fontSmall = FREESANS_6PT_WIN1252;
+#endif //MOD_CJK_ENABLED
 
     // Customize default settings
     inkhud->persistence->settings.userTiles.maxCount = 2; // How many tiles can the display handle?
@@ -66,7 +77,22 @@ void setupNicheGraphics()
     inkhud->addApplet("DMs", new InkHUD::DMApplet);                              // -
     inkhud->addApplet("Channel 0", new InkHUD::ThreadedMessageApplet(0));        // -
     inkhud->addApplet("Channel 1", new InkHUD::ThreadedMessageApplet(1));        // -
+#ifdef MOD_INPUT_MENU
+    if (channels.getNumChannels() > 2 && channels.getByIndex(2).has_settings)
+        inkhud->addApplet("Channel 2", new InkHUD::ThreadedMessageApplet(2));    // -
+    if (channels.getNumChannels() > 3 && channels.getByIndex(3).has_settings)
+        inkhud->addApplet("Channel 3", new InkHUD::ThreadedMessageApplet(3));    // -
+    if (channels.getNumChannels() > 4 && channels.getByIndex(4).has_settings)
+        inkhud->addApplet("Channel 4", new InkHUD::ThreadedMessageApplet(4));    // -
+    if (channels.getNumChannels() > 5 && channels.getByIndex(5).has_settings)
+        inkhud->addApplet("Channel 5", new InkHUD::ThreadedMessageApplet(5));    // -
+    if (channels.getNumChannels() > 6 && channels.getByIndex(6).has_settings)
+        inkhud->addApplet("Channel 6", new InkHUD::ThreadedMessageApplet(6));    // -
+    if (channels.getNumChannels() > 7 && channels.getByIndex(7).has_settings)
+        inkhud->addApplet("Channel 7", new InkHUD::ThreadedMessageApplet(7));    // -
+#else //!MOD_INPUT_MENU
     inkhud->addApplet("Positions", new InkHUD::PositionsApplet, true);           // Activated
+#endif //MOD_INPUT_MENU
     inkhud->addApplet("Recents List", new InkHUD::RecentsListApplet);            // -
     inkhud->addApplet("Heard", new InkHUD::HeardApplet, true, false, 0);         // Activated, no autoshow, default on tile 0
 

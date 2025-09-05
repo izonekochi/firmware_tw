@@ -1,5 +1,7 @@
 #ifdef MESHTASTIC_INCLUDE_INKHUD
 
+#include "configuration.h"
+
 #include "./MenuApplet.h"
 
 #include "RTC.h"
@@ -246,10 +248,12 @@ void InkHUD::MenuApplet::execute(MenuItem item)
         nodeDB->saveToDisk(SEGMENT_CONFIG);
         break;
 
+#ifndef MESHTASTIC_EXCLUDE_GPS
     case TOGGLE_GPS:
         gps->toggleGpsMode();
         nodeDB->saveToDisk(SEGMENT_CONFIG);
         break;
+#endif //MESHTASTIC_EXCLUDE_GPS
 
     case ENABLE_BLUETOOTH:
         // This helps users recover from a bad wifi config
@@ -305,11 +309,13 @@ void InkHUD::MenuApplet::showPage(MenuPage page)
                                      MenuPage::EXIT                                                  // Exit once complete
                                      ));
 
+#ifndef MESHTASTIC_EXCLUDE_GPS
         // Optional: GPS
         if (config.position.gps_mode == meshtastic_Config_PositionConfig_GpsMode_DISABLED)
             items.push_back(MenuItem("Enable GPS", MenuAction::TOGGLE_GPS, MenuPage::EXIT));
         if (config.position.gps_mode == meshtastic_Config_PositionConfig_GpsMode_ENABLED)
             items.push_back(MenuItem("Disable GPS", MenuAction::TOGGLE_GPS, MenuPage::EXIT));
+#endif //MESHTASTIC_EXCLUDE_GPS
 
         // Optional: Enable Bluetooth, in case of lost wifi connection
         if (!config.bluetooth.enabled || config.network.wifi_enabled)

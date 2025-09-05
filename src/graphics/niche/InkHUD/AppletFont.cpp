@@ -4,6 +4,10 @@
 
 #include <assert.h>
 
+#if defined(MOD_CJK_ENABLED)
+#include "graphics/niche/Fonts/cubicFont.h"
+#endif //defined(MOD_CJK_ENABLED)
+
 using namespace NicheGraphics;
 
 InkHUD::AppletFont::AppletFont()
@@ -165,7 +169,21 @@ std::string InkHUD::AppletFont::decodeUTF8(std::string encoded)
 
         // Now collected all bytes for this char
         // Remap the value to match the encoding of our 8-bit AppletFont
+#if defined(MOD_CJK_ENABLED)
+        auto ch = applyEncoding(utf8Char);
+        if (ch != '\x1A') {
+            decoded += ch;
+        }
+        else {
+            int16_t code = lookup((uint8_t*)utf8Char.c_str(), utf8Char.length());
+            if (code >= 0)
+                decoded += utf8Char;
+            else
+                decoded += ch;
+        }
+#else //!defined(MOD_CJK_ENABLED)
         decoded += applyEncoding(utf8Char);
+#endif //defined(MOD_CJK_ENABLED)
 
         // Reset, ready to build next UTF-8 char from the encoded bytes
         utf8Char.clear();
@@ -615,6 +633,148 @@ char InkHUD::AppletFont::applyEncoding(std::string utf8)
             REMAP(0x00FF, 0xFF) // LATIN SMALL LETTER Y WITH DIAERESIS
         }
     }
+
+#if defined(MOD_CJK_ENABLED)
+    else if (encoding == CJK_UTF8) {
+        // 1-Byte chars: no remapping
+        if (utf8.length() == 1)
+            return utf8.at(0);
+
+        // Multi-byte chars:
+        switch (toUtf32(utf8)) {
+            REMAP(0x20AC, 0x80) // EURO SIGN
+            REMAP(0x201A, 0x82) // SINGLE LOW-9 QUOTATION MARK
+            REMAP(0x0192, 0x83) // LATIN SMALL LETTER F WITH HOOK
+            REMAP(0x201E, 0x84) // DOUBLE LOW-9 QUOTATION MARK
+            REMAP(0x2026, 0x85) // HORIZONTAL ELLIPSIS
+            REMAP(0x2020, 0x86) // DAGGER
+            REMAP(0x2021, 0x87) // DOUBLE DAGGER
+            REMAP(0x02C6, 0x88) // MODIFIER LETTER CIRCUMFLEX ACCENT
+            REMAP(0x2030, 0x89) // PER MILLE SIGN
+            REMAP(0x0160, 0x8A) // LATIN CAPITAL LETTER S WITH CARON
+            REMAP(0x2039, 0x8B) // SINGLE LEFT-POINTING ANGLE QUOTATION MARK
+            REMAP(0x0152, 0x8C) // LATIN CAPITAL LIGATURE OE
+            REMAP(0x017D, 0x8E) // LATIN CAPITAL LETTER Z WITH CARON
+
+            REMAP(0x2018, 0x91) // LEFT SINGLE QUOTATION MARK
+            REMAP(0x2019, 0x92) // RIGHT SINGLE QUOTATION MARK
+            REMAP(0x201C, 0x93) // LEFT DOUBLE QUOTATION MARK
+            REMAP(0x201D, 0x94) // RIGHT DOUBLE QUOTATION MARK
+            REMAP(0x2022, 0x95) // BULLET
+            REMAP(0x2013, 0x96) // EN DASH
+            REMAP(0x2014, 0x97) // EM DASH
+            REMAP(0x02DC, 0x98) // SMALL TILDE
+            REMAP(0x2122, 0x99) // TRADE MARK SIGN
+            REMAP(0x0161, 0x9A) // LATIN SMALL LETTER S WITH CARON
+            REMAP(0x203A, 0x9B) // SINGLE RIGHT-POINTING ANGLE QUOTATION MARK
+            REMAP(0x0153, 0x9C) // LATIN SMALL LIGATURE OE
+            REMAP(0x017E, 0x9E) // LATIN SMALL LETTER Z WITH CARON
+            REMAP(0x0178, 0x9F) // LATIN CAPITAL LETTER Y WITH DIAERESIS
+
+            REMAP(0x00A0, 0xA0) // NO-BREAK SPACE
+            REMAP(0x00A1, 0xA1) // INVERTED EXCLAMATION MARK
+            REMAP(0x00A2, 0xA2) // CENT SIGN
+            REMAP(0x00A3, 0xA3) // POUND SIGN
+            REMAP(0x00A4, 0xA4) // CURRENCY SIGN
+            REMAP(0x00A5, 0xA5) // YEN SIGN
+            REMAP(0x00A6, 0xA6) // BROKEN BAR
+            REMAP(0x00A7, 0xA7) // SECTION SIGN
+            REMAP(0x00A8, 0xA8) // DIAERESIS
+            REMAP(0x00A9, 0xA9) // COPYRIGHT SIGN
+            REMAP(0x00AA, 0xAA) // FEMININE ORDINAL INDICATOR
+            REMAP(0x00AB, 0xAB) // LEFT-POINTING DOUBLE ANGLE QUOTATION MARK
+            REMAP(0x00AC, 0xAC) // NOT SIGN
+            REMAP(0x00AD, 0xAD) // SOFT HYPHEN
+            REMAP(0x00AE, 0xAE) // REGISTERED SIGN
+            REMAP(0x00AF, 0xAF) // MACRON
+
+            REMAP(0x00B0, 0xB0) // DEGREE SIGN
+            REMAP(0x00B1, 0xB1) // PLUS-MINUS SIGN
+            REMAP(0x00B2, 0xB2) // SUPERSCRIPT TWO
+            REMAP(0x00B3, 0xB3) // SUPERSCRIPT THREE
+            REMAP(0x00B4, 0xB4) // ACUTE ACCENT
+            REMAP(0x00B5, 0xB5) // MICRO SIGN
+            REMAP(0x00B6, 0xB6) // PILCROW SIGN
+            REMAP(0x00B7, 0xB7) // MIDDLE DOT
+            REMAP(0x00B8, 0xB8) // CEDILLA
+            REMAP(0x00B9, 0xB9) // SUPERSCRIPT ONE
+            REMAP(0x00BA, 0xBA) // MASCULINE ORDINAL INDICATOR
+            REMAP(0x00BB, 0xBB) // RIGHT-POINTING DOUBLE ANGLE QUOTATION MARK
+            REMAP(0x00BC, 0xBC) // VULGAR FRACTION ONE QUARTER
+            REMAP(0x00BD, 0xBD) // VULGAR FRACTION ONE HALF
+            REMAP(0x00BE, 0xBE) // VULGAR FRACTION THREE QUARTERS
+            REMAP(0x00BF, 0xBF) // INVERTED QUESTION MARK
+
+            REMAP(0x00C0, 0xC0) // LATIN CAPITAL LETTER A WITH GRAVE
+            REMAP(0x00C1, 0xC1) // LATIN CAPITAL LETTER A WITH ACUTE
+            REMAP(0x00C2, 0xC2) // LATIN CAPITAL LETTER A WITH CIRCUMFLEX
+            REMAP(0x00C3, 0xC3) // LATIN CAPITAL LETTER A WITH TILDE
+            REMAP(0x00C4, 0xC4) // LATIN CAPITAL LETTER A WITH DIAERESIS
+            REMAP(0x00C5, 0xC5) // LATIN CAPITAL LETTER A WITH RING ABOVE
+            REMAP(0x00C6, 0xC6) // LATIN CAPITAL LETTER AE
+            REMAP(0x00C7, 0xC7) // LATIN CAPITAL LETTER C WITH CEDILLA
+            REMAP(0x00C8, 0xC8) // LATIN CAPITAL LETTER E WITH GRAVE
+            REMAP(0x00C9, 0xC9) // LATIN CAPITAL LETTER E WITH ACUTE
+            REMAP(0x00CA, 0xCA) // LATIN CAPITAL LETTER E WITH CIRCUMFLEX
+            REMAP(0x00CB, 0xCB) // LATIN CAPITAL LETTER E WITH DIAERESIS
+            REMAP(0x00CC, 0xCC) // LATIN CAPITAL LETTER I WITH GRAVE
+            REMAP(0x00CD, 0xCD) // LATIN CAPITAL LETTER I WITH ACUTE
+            REMAP(0x00CE, 0xCE) // LATIN CAPITAL LETTER I WITH CIRCUMFLEX
+            REMAP(0x00CF, 0xCF) // LATIN CAPITAL LETTER I WITH DIAERESIS
+
+            REMAP(0x00D0, 0xD0) // LATIN CAPITAL LETTER ETH
+            REMAP(0x00D1, 0xD1) // LATIN CAPITAL LETTER N WITH TILDE
+            REMAP(0x00D2, 0xD2) // LATIN CAPITAL LETTER O WITH GRAVE
+            REMAP(0x00D3, 0xD3) // LATIN CAPITAL LETTER O WITH ACUTE
+            REMAP(0x00D4, 0xD4) // LATIN CAPITAL LETTER O WITH CIRCUMFLEX
+            REMAP(0x00D5, 0xD5) // LATIN CAPITAL LETTER O WITH TILDE
+            REMAP(0x00D6, 0xD6) // LATIN CAPITAL LETTER O WITH DIAERESIS
+            REMAP(0x00D7, 0xD7) // MULTIPLICATION SIGN
+            REMAP(0x00D8, 0xD8) // LATIN CAPITAL LETTER O WITH STROKE
+            REMAP(0x00D9, 0xD9) // LATIN CAPITAL LETTER U WITH GRAVE
+            REMAP(0x00DA, 0xDA) // LATIN CAPITAL LETTER U WITH ACUTE
+            REMAP(0x00DB, 0xDB) // LATIN CAPITAL LETTER U WITH CIRCUMFLEX
+            REMAP(0x00DC, 0xDC) // LATIN CAPITAL LETTER U WITH DIAERESIS
+            REMAP(0x00DD, 0xDD) // LATIN CAPITAL LETTER Y WITH ACUTE
+            REMAP(0x00DE, 0xDE) // LATIN CAPITAL LETTER THORN
+            REMAP(0x00DF, 0xDF) // LATIN SMALL LETTER SHARP S
+
+            REMAP(0x00E0, 0xE0) // LATIN SMALL LETTER A WITH GRAVE
+            REMAP(0x00E1, 0xE1) // LATIN SMALL LETTER A WITH ACUTE
+            REMAP(0x00E2, 0xE2) // LATIN SMALL LETTER A WITH CIRCUMFLEX
+            REMAP(0x00E3, 0xE3) // LATIN SMALL LETTER A WITH TILDE
+            REMAP(0x00E4, 0xE4) // LATIN SMALL LETTER A WITH DIAERESIS
+            REMAP(0x00E5, 0xE5) // LATIN SMALL LETTER A WITH RING ABOVE
+            REMAP(0x00E6, 0xE6) // LATIN SMALL LETTER AE
+            REMAP(0x00E7, 0xE7) // LATIN SMALL LETTER C WITH CEDILLA
+            REMAP(0x00E8, 0xE8) // LATIN SMALL LETTER E WITH GRAVE
+            REMAP(0x00E9, 0xE9) // LATIN SMALL LETTER E WITH ACUTE
+            REMAP(0x00EA, 0xEA) // LATIN SMALL LETTER E WITH CIRCUMFLEX
+            REMAP(0x00EB, 0xEB) // LATIN SMALL LETTER E WITH DIAERESIS
+            REMAP(0x00EC, 0xEC) // LATIN SMALL LETTER I WITH GRAVE
+            REMAP(0x00ED, 0xED) // LATIN SMALL LETTER I WITH ACUTE
+            REMAP(0x00EE, 0xEE) // LATIN SMALL LETTER I WITH CIRCUMFLEX
+            REMAP(0x00EF, 0xEF) // LATIN SMALL LETTER I WITH DIAERESIS
+
+            REMAP(0x00F0, 0xF0) // LATIN SMALL LETTER ETH
+            REMAP(0x00F1, 0xF1) // LATIN SMALL LETTER N WITH TILDE
+            REMAP(0x00F2, 0xF2) // LATIN SMALL LETTER O WITH GRAVE
+            REMAP(0x00F3, 0xF3) // LATIN SMALL LETTER O WITH ACUTE
+            REMAP(0x00F4, 0xF4) // LATIN SMALL LETTER O WITH CIRCUMFLEX
+            REMAP(0x00F5, 0xF5) // LATIN SMALL LETTER O WITH TILDE
+            REMAP(0x00F6, 0xF6) // LATIN SMALL LETTER O WITH DIAERESIS
+            REMAP(0x00F7, 0xF7) // DIVISION SIGN
+            REMAP(0x00F8, 0xF8) // LATIN SMALL LETTER O WITH STROKE
+            REMAP(0x00F9, 0xF9) // LATIN SMALL LETTER U WITH GRAVE
+            REMAP(0x00FA, 0xFA) // LATIN SMALL LETTER U WITH ACUTE
+            REMAP(0x00FB, 0xFB) // LATIN SMALL LETTER U WITH CIRCUMFLEX
+            REMAP(0x00FC, 0xFC) // LATIN SMALL LETTER U WITH DIAERESIS
+            REMAP(0x00FD, 0xFD) // LATIN SMALL LETTER Y WITH ACUTE
+            REMAP(0x00FE, 0xFE) // LATIN SMALL LETTER THORN
+            REMAP(0x00FF, 0xFF) // LATIN SMALL LETTER Y WITH DIAERESIS
+        }
+    }
+#endif //defined(MOD_CJK_ENABLED)
 
     else /*ASCII or Unhandled*/ {
         if (utf8.length() == 1)

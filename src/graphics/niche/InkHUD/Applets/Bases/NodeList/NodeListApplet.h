@@ -22,6 +22,7 @@ Used by the "Recents" and "Heard" applets. Possibly more in future?
 #include "configuration.h"
 
 #include "graphics/niche/InkHUD/Applet.h"
+#include "MeshModule.h"
 
 #include "main.h"
 
