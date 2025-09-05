@@ -232,7 +232,7 @@ void InkHUD::InputMenuApplet::show(Tile *t, Tile *neighborTile)
     // Remember who *really* owns this tile
     borrowedTileOwner = t->getAssignedApplet();
 
-    if (neighborTile && strncmp(neighborTile->getAssignedApplet()->name, "Channel ", 8) == 0)
+    if (neighborTile && Controllable::checkControllable(neighborTile->getAssignedApplet()) != Controllable::Types::Uncontrollable)
         neighborTileOwner = neighborTile->getAssignedApplet();
     else
         neighborTileOwner = nullptr;
@@ -450,10 +450,10 @@ int32_t InkHUD::InputMenuApplet::runOnce()
     }
     else {
 
-        ThreadedMessageApplet* targetApplet = nullptr;
+        Controllable* ctrl = nullptr;
         for (auto app : inkhud->userApplets) {
-            if (app->isForeground() && strncmp(app->name, "Channel ", 8) == 0) {
-                targetApplet = (ThreadedMessageApplet*)app;
+            if (app->isForeground() && Controllable::checkControllable(app) != Controllable::Types::Uncontrollable) {
+                ctrl = (Controllable*)app;
                 break;
             }
         }
@@ -462,29 +462,44 @@ int32_t InkHUD::InputMenuApplet::runOnce()
             switch (data) {
             case 0xE7: // back
                 LOG_INFO("Key press [back]");
+                if (ctrl)
+                    ctrl->handleBack();
                 break;
             case 0xE8: // up
                 LOG_INFO("Key press [up]");
-                if (targetApplet)
-                    targetApplet->scrollUp();
+                if (ctrl)
+                    ctrl->handleUp();
                 break;
             case 0xE9: // enter
                 LOG_INFO("Key press [enter]");
+                if (ctrl)
+                    if (!ctrl->handleEnter())
+                        inkhud->openMenu();
                 break;
             case 0xEA: // left
                 LOG_INFO("Key press [left]");
-                if (settings->userTiles.focused > 0 && settings->userTiles.count > 1)
-                    inkhud->nextTile();
+                if (settings->userTiles.count > 1) {
+                    if (settings->userTiles.focused > 0)
+                        inkhud->nextTile();
+                }
+                else {
+                    inkhud->nextApplet();
+                }
                 break;
             case 0xEB: // down
                 LOG_INFO("Key press [down]");
-                if (targetApplet)
-                    targetApplet->scrollDown();
+                if (ctrl)
+                    ctrl->handleDown();
                 break;
             case 0xEC: // right
                 LOG_INFO("Key press [right]");
-                if (settings->userTiles.focused == 0 && settings->userTiles.count > 1)
-                    inkhud->nextTile();
+                if (settings->userTiles.count > 1) {
+                    if (settings->userTiles.focused == 0)
+                        inkhud->nextTile();
+                }
+                else {
+                    inkhud->nextApplet();
+                }
                 break;
             }
             requestUpdate(Drivers::EInk::UpdateTypes::FAST);
@@ -733,6 +748,16 @@ void InkHUD::InputMenuApplet::onButtonLongPress()
 
 void InkHUD::InputMenuApplet::handleKeyboardPress()
 {
+    Controllable* ctrlPtr = nullptr;
+    Controllable::Types ctrlType = Controllable::Types::Uncontrollable;
+    bool bBorrowed = false;
+    if (neighborTileOwner && Controllable::checkControllable(neighborTileOwner) != Controllable::Types::Uncontrollable) {
+        ctrlType = Controllable::checkControllable(neighborTileOwner);
+    }
+    else if (borrowedTileOwner && Controllable::checkControllable(borrowedTileOwner) != Controllable::Types::Uncontrollable) {
+        ctrlType = Controllable::checkControllable(borrowedTileOwner);
+        bBorrowed = true;
+    }
     if (selMode == 0x10) { // send to channel
         std::string message = currentInput;
         currentInput.clear();
@@ -762,22 +787,20 @@ void InkHUD::InputMenuApplet::handleKeyboardPress()
     else {
         if (selKB == 0) {
             if (selRow == 0) {
-                std::string message = currentInput;
-                currentInput.clear();
-                currentCIM.clear();
-                currentCIMKeys.clear();
-                currentCIMResults.clear();
-                selMode = 1;
+                if (ctrlPtr && ctrlType == Controllable::Types::ThreadedMessage) {
+                    std::string message = currentInput;
+                    currentInput.clear();
+                    currentCIM.clear();
+                    currentCIMKeys.clear();
+                    currentCIMResults.clear();
+                    selMode = 1;
 #if !defined(MOD_UART_KEYBOARD_12KEY)
-                selCol = -1;
-                selRow = -1;
+                    selCol = -1;
+                    selRow = -1;
 #endif //defined(MOD_UART_KEYBOARD_12KEY)
-                if (neighborTileOwner && strncmp(neighborTileOwner->name, "Channel ", 8) == 0) {
-                    sendText(NODENUM_BROADCAST, ((ThreadedMessageApplet*)neighborTileOwner)->getChannelIndex(), message);
-                }
-                else if (borrowedTileOwner && strncmp(borrowedTileOwner->name, "Channel ", 8) == 0) {
-                    sendText(NODENUM_BROADCAST, ((ThreadedMessageApplet*)borrowedTileOwner)->getChannelIndex(), message);
-                    sendToBackground();
+                    sendText(NODENUM_BROADCAST, ((ThreadedMessageApplet*)ctrlPtr)->getChannelIndex(), message);
+                    if (bBorrowed)
+                        sendToBackground();
                 }
             }
             else if (selRow == 1) {
@@ -790,12 +813,10 @@ void InkHUD::InputMenuApplet::handleKeyboardPress()
                     sendToBackground();
                 }
                 else if (selCol == 2) {
-                    if (neighborTileOwner && strncmp(neighborTileOwner->name, "Channel ", 8) == 0) {
-                        sendText(NODENUM_BROADCAST, ((ThreadedMessageApplet*)neighborTileOwner)->getChannelIndex(), "@ab");
-                    }
-                    else if (borrowedTileOwner && strncmp(borrowedTileOwner->name, "Channel ", 8) == 0) {
-                        sendText(NODENUM_BROADCAST, ((ThreadedMessageApplet*)borrowedTileOwner)->getChannelIndex(), "@ab");
-                        sendToBackground();
+                    if (ctrlPtr && ctrlType == Controllable::Types::ThreadedMessage) {
+                        sendText(NODENUM_BROADCAST, ((ThreadedMessageApplet*)ctrlPtr)->getChannelIndex(), "@ab");
+                        if (bBorrowed)
+                            sendToBackground();
                     }
                 }
                 selMode = 1;
@@ -829,16 +850,15 @@ void InkHUD::InputMenuApplet::handleKeyboardPress()
 #endif //defined(MOD_UART_KEYBOARD_12KEY)
                 }
                 else {
-                    ThreadedMessageApplet* targetApplet = nullptr;
-                    if (neighborTileOwner && strncmp(neighborTileOwner->name, "Channel ", 8) == 0)
-                        targetApplet = (ThreadedMessageApplet*)neighborTileOwner;
-                    else if (borrowedTileOwner && strncmp(borrowedTileOwner->name, "Channel ", 8) == 0)
-                        targetApplet = (ThreadedMessageApplet*)borrowedTileOwner;
-                    if (selCol == 2) {
-                        targetApplet->scrollUp();
-                    }
-                    else if (selCol == 3) {
-                        targetApplet->scrollDown();
+                    if (ctrlPtr) {
+                        if (selCol == 2) {
+                            ctrlPtr->handleUp();
+                        }
+                        else if (selCol == 3) {
+                            ctrlPtr->handleDown();
+                        }
+                        if (bBorrowed)
+                            sendToBackground();
                     }
                 }
             }

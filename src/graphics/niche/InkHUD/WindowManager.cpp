@@ -7,6 +7,7 @@
 #include "./Applets/System/Menu/MenuApplet.h"
 #if defined(MOD_INPUT_MENU)
 #include "./Applets/System/InputMenu/InputMenuApplet.h"
+#include "./Applets/Bases/Controllable/Controllable.h"
 #endif //defined(MOD_INPUT_MENU)
 #include "./Applets/System/Notification/NotificationApplet.h"
 #include "./Applets/System/Pairing/PairingApplet.h"
@@ -104,11 +105,11 @@ void InkHUD::WindowManager::nextTile()
         menu->show(userTiles.at(settings->userTiles.focused));
 #if defined(MOD_INPUT_MENU)
     else if (inputMenuWasOpen) {
-        if (settings->userTiles.count == 1 && strncmp(userTiles.at(settings->userTiles.focused)->getAssignedApplet()->name, "Channel ", 8) == 0) {
+        if (settings->userTiles.count == 1 && Controllable::checkControllable(userTiles.at(settings->userTiles.focused)->getAssignedApplet()) != Controllable::Types::Uncontrollable) {
             InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
             inputMenu->show(userTiles.at(settings->userTiles.focused), nullptr);
         }
-        else if (settings->userTiles.count == 2 && strncmp(userTiles.at(1 - settings->userTiles.focused)->getAssignedApplet()->name, "Channel ", 8) == 0) {
+        else if (settings->userTiles.count == 2 && Controllable::checkControllable(userTiles.at(1 - settings->userTiles.focused)->getAssignedApplet()) != Controllable::Types::Uncontrollable) {
             InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
             inputMenu->show(userTiles.at(settings->userTiles.focused), userTiles.at(1 - settings->userTiles.focused));
         }
@@ -128,11 +129,11 @@ void InkHUD::WindowManager::nextTile()
 void InkHUD::WindowManager::openMenu()
 {
 #if defined(MOD_INPUT_MENU)
-    if (settings->userTiles.count == 1 && strncmp(userTiles.at(settings->userTiles.focused)->getAssignedApplet()->name, "Channel ", 8) == 0) {
+    if (settings->userTiles.count == 1 && Controllable::checkControllable(userTiles.at(settings->userTiles.focused)->getAssignedApplet()) != Controllable::Types::Uncontrollable) {
         InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
         inputMenu->show(userTiles.at(settings->userTiles.focused), nullptr);
     }
-    else if (settings->userTiles.count == 2 && strncmp(userTiles.at(1 - settings->userTiles.focused)->getAssignedApplet()->name, "Channel ", 8) == 0) {
+    else if (settings->userTiles.count == 2 && Controllable::checkControllable(userTiles.at(1 - settings->userTiles.focused)->getAssignedApplet()) != Controllable::Types::Uncontrollable) {
         InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
         inputMenu->show(userTiles.at(settings->userTiles.focused), userTiles.at(1 - settings->userTiles.focused));
     }
@@ -259,11 +260,11 @@ void InkHUD::WindowManager::changeLayout()
     else {
         InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
         if (inputMenu->isForeground()) {
-            if (settings->userTiles.count == 1 && strncmp(userTiles.at(settings->userTiles.focused)->getAssignedApplet()->name, "Channel ", 8) == 0) {
+            if (settings->userTiles.count == 1 && Controllable::checkControllable(userTiles.at(settings->userTiles.focused)->getAssignedApplet()) != Controllable::Types::Uncontrollable) {
                 InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
                 inputMenu->show(userTiles.at(settings->userTiles.focused), nullptr);
             }
-            else if (settings->userTiles.count == 2 && strncmp(userTiles.at(1 - settings->userTiles.focused)->getAssignedApplet()->name, "Channel ", 8) == 0) {
+            else if (settings->userTiles.count == 2 && Controllable::checkControllable(userTiles.at(1 - settings->userTiles.focused)->getAssignedApplet()) != Controllable::Types::Uncontrollable) {
                 InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
                 inputMenu->show(userTiles.at(settings->userTiles.focused), userTiles.at(1 - settings->userTiles.focused));
             }

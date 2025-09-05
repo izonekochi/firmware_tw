@@ -17,11 +17,21 @@ constexpr uint32_t MAX_MESSAGE_SIZE = 250;
 
 #include "mesh/generated/meshtastic/storeforward.pb.h"
 
+#if defined(MOD_INPUT_MENU)
+InkHUD::ThreadedMessageApplet::ThreadedMessageApplet(uint8_t channelIndex)
+    : MeshModule("ThreadedMessageApplet"), Controllable(Controllable::Types::ThreadedMessage), channelIndex(channelIndex)
+#else //!defined(MOD_INPUT_MENU)
 InkHUD::ThreadedMessageApplet::ThreadedMessageApplet(uint8_t channelIndex)
     : MeshModule("ThreadedMessageApplet"), channelIndex(channelIndex)
+#endif //defined(MOD_INPUT_MENU)
 #else //!defined(MOD_MESHPOCKET)
+#if defined(MOD_INPUT_MENU)
+InkHUD::ThreadedMessageApplet::ThreadedMessageApplet(uint8_t channelIndex)
+    : SinglePortModule("ThreadedMessageApplet", meshtastic_PortNum_TEXT_MESSAGE_APP), Controllable(Controllable::Types::ThreadedMessage), channelIndex(channelIndex)
+#else //!defined(MOD_INPUT_MENU)
 InkHUD::ThreadedMessageApplet::ThreadedMessageApplet(uint8_t channelIndex)
     : SinglePortModule("ThreadedMessageApplet", meshtastic_PortNum_TEXT_MESSAGE_APP), channelIndex(channelIndex)
+#endif //defined(MOD_INPUT_MENU)
 #endif //defined(MOD_MESHPOCKET)
 {
     // Create the message store
@@ -302,26 +312,31 @@ bool InkHUD::ThreadedMessageApplet::wantPacket(const meshtastic_MeshPacket *p)
 #endif //defined(MOD_MESHPOCKET)
 
 #if defined(MOD_INPUT_MENU)
-void InkHUD::ThreadedMessageApplet::scrollUp()
+bool InkHUD::ThreadedMessageApplet::handleUp()
 {
     if (beginMsgIndex < store->messages.size() - 1) {
         beginMsgIndex++;
         requestUpdate(Drivers::EInk::UpdateTypes::FAST);
+        return true;
     }
+    return false;
 }
 
-void InkHUD::ThreadedMessageApplet::scrollDown()
+bool InkHUD::ThreadedMessageApplet::handleDown()
 {
     if (beginMsgIndex > 0) {
         beginMsgIndex--;
         requestUpdate(Drivers::EInk::UpdateTypes::FAST);
+        return true;
     }
+    return false;
 }
 
-void InkHUD::ThreadedMessageApplet::scrollToEnd()
+bool InkHUD::ThreadedMessageApplet::handleBack()
 {
     beginMsgIndex = 0;
     requestUpdate(Drivers::EInk::UpdateTypes::FAST);
+    return true;
 }
 #endif //defined(MOD_INPUT_MENU)
 

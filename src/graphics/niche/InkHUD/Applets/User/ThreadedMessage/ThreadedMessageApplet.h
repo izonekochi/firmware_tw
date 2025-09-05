@@ -25,15 +25,27 @@ Suggest a max of two channel, to minimize fs usage?
 
 #include "modules/TextMessageModule.h"
 
+#if defined(MOD_INPUT_MENU)
+#include "graphics/niche/InkHUD/Applets/Bases/Controllable/Controllable.h"
+#endif //defined(MOD_INPUT_MENU)
+
 namespace NicheGraphics::InkHUD
 {
 
 class Applet;
 
 #if defined(MOD_MESHPOCKET)
+#if defined(MOD_INPUT_MENU)
+class ThreadedMessageApplet : public Applet, public Controllable, public MeshModule
+#else //!defined(MOD_INPUT_MENU)
 class ThreadedMessageApplet : public Applet, public MeshModule
+#endif //defined(MOD_INPUT_MENU)
 #else //!defined(MOD_MESHPOCKET)
+#if defined(MOD_INPUT_MENU)
+class ThreadedMessageApplet : public Applet, public Controllable, public SinglePortModule
+#else //!defined(MOD_INPUT_MENU)
 class ThreadedMessageApplet : public Applet, public SinglePortModule
+#endif //defined(MOD_INPUT_MENU)
 #endif //defined(MOD_MESHPOCKET)
 {
   public:
@@ -55,9 +67,9 @@ class ThreadedMessageApplet : public Applet, public SinglePortModule
 
 #if defined(MOD_INPUT_MENU)
     uint8_t getChannelIndex() const { return channelIndex; }
-    void scrollUp();
-    void scrollDown();
-    void scrollToEnd();
+    bool handleUp() override;
+    bool handleDown() override;
+    bool handleBack() override;
 #endif //defined(MOD_INPUT_MENU)
 
   protected:
