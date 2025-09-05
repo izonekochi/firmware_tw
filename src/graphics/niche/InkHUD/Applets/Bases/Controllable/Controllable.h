@@ -12,15 +12,16 @@ namespace NicheGraphics::InkHUD {
             Uncontrollable,
             ThreadedMessage,
         };
-        Controllable(const Types type);
-        virtual ~Controllable();
+        virtual ~Controllable() = default;
         virtual bool handleUp();
         virtual bool handleDown();
         virtual bool handleEnter();
         virtual bool handleBack();
+        static void registerControllable(const void* ptr, Types type);
+        static void unregisterControllable(const void* ptr);
         static Types checkControllable(const void* ptr);
     protected:
-        static inline std::unordered_map<const void*, Types> instances;
+        static std::unordered_map<const void*, Types> instances;
     };
 
 } // namespace NicheGraphics::InkHUD

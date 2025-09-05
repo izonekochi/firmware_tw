@@ -449,32 +449,36 @@ int32_t InkHUD::InputMenuApplet::runOnce()
         }
     }
     else {
-
-        Controllable* ctrl = nullptr;
-        for (auto app : inkhud->userApplets) {
-            if (app->isForeground() && Controllable::checkControllable(app) != Controllable::Types::Uncontrollable) {
-                ctrl = (Controllable*)app;
-                break;
-            }
-        }
         while (Serial2.available()) {
             uint8_t data = Serial2.read();
             switch (data) {
             case 0xE7: // back
                 LOG_INFO("Key press [back]");
-                if (ctrl)
-                    ctrl->handleBack();
+                for (auto app : inkhud->userApplets) {
+                    if (app->isForeground() && Controllable::checkControllable(app) != Controllable::Types::Uncontrollable) {
+                        ((Controllable*)app)->handleBack();
+                        break;
+                    }
+                }
                 break;
             case 0xE8: // up
                 LOG_INFO("Key press [up]");
-                if (ctrl)
-                    ctrl->handleUp();
+                for (auto app : inkhud->userApplets) {
+                    if (app->isForeground() && Controllable::checkControllable(app) != Controllable::Types::Uncontrollable) {
+                        ((Controllable*)app)->handleUp();
+                        break;
+                    }
+                }
                 break;
             case 0xE9: // enter
                 LOG_INFO("Key press [enter]");
-                if (ctrl)
-                    if (!ctrl->handleEnter())
-                        inkhud->openMenu();
+                for (auto app : inkhud->userApplets) {
+                    if (app->isForeground() && Controllable::checkControllable(app) != Controllable::Types::Uncontrollable) {
+                        if (!((Controllable*)app)->handleEnter())
+                            inkhud->openMenu();
+                        break;
+                    }
+                }
                 break;
             case 0xEA: // left
                 LOG_INFO("Key press [left]");
@@ -488,8 +492,12 @@ int32_t InkHUD::InputMenuApplet::runOnce()
                 break;
             case 0xEB: // down
                 LOG_INFO("Key press [down]");
-                if (ctrl)
-                    ctrl->handleDown();
+                for (auto app : inkhud->userApplets) {
+                    if (app->isForeground() && Controllable::checkControllable(app) != Controllable::Types::Uncontrollable) {
+                        ((Controllable*)app)->handleDown();
+                        break;
+                    }
+                }
                 break;
             case 0xEC: // right
                 LOG_INFO("Key press [right]");
@@ -748,7 +756,7 @@ void InkHUD::InputMenuApplet::onButtonLongPress()
 
 void InkHUD::InputMenuApplet::handleKeyboardPress()
 {
-    Controllable* ctrlPtr = nullptr;
+    void* ctrlPtr = nullptr;
     Controllable::Types ctrlType = Controllable::Types::Uncontrollable;
     bool bBorrowed = false;
     if (neighborTileOwner && Controllable::checkControllable(neighborTileOwner) != Controllable::Types::Uncontrollable) {
@@ -852,10 +860,10 @@ void InkHUD::InputMenuApplet::handleKeyboardPress()
                 else {
                     if (ctrlPtr) {
                         if (selCol == 2) {
-                            ctrlPtr->handleUp();
+                            ((Controllable*)ctrlPtr)->handleUp();
                         }
                         else if (selCol == 3) {
-                            ctrlPtr->handleDown();
+                            ((Controllable*)ctrlPtr)->handleDown();
                         }
                         if (bBorrowed)
                             sendToBackground();

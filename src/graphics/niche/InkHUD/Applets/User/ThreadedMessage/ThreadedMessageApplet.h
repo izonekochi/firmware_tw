@@ -36,13 +36,13 @@ class Applet;
 
 #if defined(MOD_MESHPOCKET)
 #if defined(MOD_INPUT_MENU)
-class ThreadedMessageApplet : public Applet, public Controllable, public MeshModule
+class ThreadedMessageApplet : public Applet, virtual public Controllable, public MeshModule
 #else //!defined(MOD_INPUT_MENU)
 class ThreadedMessageApplet : public Applet, public MeshModule
 #endif //defined(MOD_INPUT_MENU)
 #else //!defined(MOD_MESHPOCKET)
 #if defined(MOD_INPUT_MENU)
-class ThreadedMessageApplet : public Applet, public Controllable, public SinglePortModule
+class ThreadedMessageApplet : public Applet, virtual public Controllable, public SinglePortModule
 #else //!defined(MOD_INPUT_MENU)
 class ThreadedMessageApplet : public Applet, public SinglePortModule
 #endif //defined(MOD_INPUT_MENU)
@@ -51,6 +51,9 @@ class ThreadedMessageApplet : public Applet, public SinglePortModule
   public:
     explicit ThreadedMessageApplet(uint8_t channelIndex);
     ThreadedMessageApplet() = delete;
+#if defined(MOD_INPUT_MENU)
+    ~ThreadedMessageApplet() override;
+#endif //defined(MOD_INPUT_MENU)
 
     void onRender() override;
 

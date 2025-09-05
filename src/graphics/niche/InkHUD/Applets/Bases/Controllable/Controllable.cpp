@@ -4,13 +4,7 @@
 
 namespace NicheGraphics::InkHUD {
 
-    Controllable::Controllable(const Types type) {
-        instances[this] = type;
-    }
-
-    Controllable::~Controllable() {
-        instances.erase(this);
-    }
+    std::unordered_map<const void*, Controllable::Types> Controllable::instances;
     
     bool Controllable::handleUp() {
         return false;
@@ -28,6 +22,15 @@ namespace NicheGraphics::InkHUD {
         return false;
     }
     
+    void Controllable::registerControllable(const void* ptr, const Types type) {
+        instances[ptr] = type;
+    }
+    
+    void Controllable::unregisterControllable(const void* ptr) {
+        instances.erase(ptr);
+    }
+
+
     Controllable::Types Controllable::checkControllable(const void* ptr) {
         return instances.find(ptr) == instances.cend() ? Types::Uncontrollable : instances[ptr];
     }

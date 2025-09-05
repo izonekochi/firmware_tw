@@ -19,7 +19,7 @@ constexpr uint32_t MAX_MESSAGE_SIZE = 250;
 
 #if defined(MOD_INPUT_MENU)
 InkHUD::ThreadedMessageApplet::ThreadedMessageApplet(uint8_t channelIndex)
-    : MeshModule("ThreadedMessageApplet"), Controllable(Controllable::Types::ThreadedMessage), channelIndex(channelIndex)
+    : Controllable(), MeshModule("ThreadedMessageApplet"), channelIndex(channelIndex)
 #else //!defined(MOD_INPUT_MENU)
 InkHUD::ThreadedMessageApplet::ThreadedMessageApplet(uint8_t channelIndex)
     : MeshModule("ThreadedMessageApplet"), channelIndex(channelIndex)
@@ -27,18 +27,28 @@ InkHUD::ThreadedMessageApplet::ThreadedMessageApplet(uint8_t channelIndex)
 #else //!defined(MOD_MESHPOCKET)
 #if defined(MOD_INPUT_MENU)
 InkHUD::ThreadedMessageApplet::ThreadedMessageApplet(uint8_t channelIndex)
-    : SinglePortModule("ThreadedMessageApplet", meshtastic_PortNum_TEXT_MESSAGE_APP), Controllable(Controllable::Types::ThreadedMessage), channelIndex(channelIndex)
+    : SinglePortModule("ThreadedMessageApplet", meshtastic_PortNum_TEXT_MESSAGE_APP), Controllable(), channelIndex(channelIndex)
 #else //!defined(MOD_INPUT_MENU)
 InkHUD::ThreadedMessageApplet::ThreadedMessageApplet(uint8_t channelIndex)
     : SinglePortModule("ThreadedMessageApplet", meshtastic_PortNum_TEXT_MESSAGE_APP), channelIndex(channelIndex)
 #endif //defined(MOD_INPUT_MENU)
 #endif //defined(MOD_MESHPOCKET)
 {
+#if defined(MOD_INPUT_MENU)
+    Controllable::registerControllable(this, Controllable::Types::ThreadedMessage);
+#endif //defined(MOD_INPUT_MENU)
     // Create the message store
     // Will shortly attempt to load messages from RAM, if applet is active
     // Label (filename in flash) is set from channel index
     store = new MessageStore("ch" + to_string(channelIndex));
 }
+
+#if defined(MOD_INPUT_MENU)
+InkHUD::ThreadedMessageApplet::~ThreadedMessageApplet()
+{
+    Controllable::unregisterControllable(this);
+}
+#endif //defined(MOD_INPUT_MENU)
 
 void InkHUD::ThreadedMessageApplet::onRender()
 {
