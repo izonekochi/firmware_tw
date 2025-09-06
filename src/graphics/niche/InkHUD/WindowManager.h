@@ -30,6 +30,10 @@ class WindowManager
     void nextTile();
     void openMenu();
     void nextApplet();
+#if defined(MOD_INPUT_MENU)
+    void prevApplet();
+    Tile* getFocusedTile();
+#endif //defined(MOD_INPUT_MENU)
     void rotate();
     void toggleBatteryIcon();
 

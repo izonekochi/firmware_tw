@@ -4,6 +4,7 @@
 
 #include "../Menu/MenuApplet.h"
 #include "../../User/ThreadedMessage/ThreadedMessageApplet.h"
+#include "../../User/Heard/HeardApplet.h"
 #include "InputMenuApplet.h"
 
 #include "MeshService.h"
@@ -284,10 +285,7 @@ int32_t InkHUD::InputMenuApplet::runOnce()
             case 0xE8: // up
                 LOG_INFO("Key press [up]");
                 if (selMode == 0) { // select KB
-                    if (selKB <= 0)
-                        selKB = keyboards.size() - 1;
-                    else
-                        selKB--;
+                    sendToBackground();
                 }
                 else if (selMode == 1 || selMode == 2) { // select row / col
                     if (selMode == 1) { // auto upgrade to mode 2
@@ -378,10 +376,11 @@ int32_t InkHUD::InputMenuApplet::runOnce()
             case 0xEB: // down
                 LOG_INFO("Key press [down]");
                 if (selMode == 0) { // select KB
-                    if (selKB == (int16_t)keyboards.size() - 1)
-                        selKB = 0;
-                    else
-                        selKB++;
+                    if (selKB >= 0 && selKB < (int16_t)keyboards.size()) {
+                        selMode = 2; // go into detailed mode
+                        selRow = 0;
+                        selCol = 0;
+                    }
                 }
                 else if (selMode == 1 || selMode == 2) { // select row / col
                     if (selMode == 1) { // auto upgrade to mode 2
@@ -449,34 +448,51 @@ int32_t InkHUD::InputMenuApplet::runOnce()
         }
     }
     else {
+        auto getActiveControllable = [this]() {
+            for (auto app : inkhud->userApplets) {
+                if (app->isForeground() && app->getTile() == inkhud->getFocusedTile()) {
+                    const auto type = Controllable::checkControllable(app);
+                    if (type == Controllable::Types::ThreadedMessage) {
+                        auto app1 = (ThreadedMessageApplet*)app;
+                        return (Controllable*)app1;
+                    }
+                    else if (type == Controllable::Types::Heard) {
+                        auto app1 = (HeardApplet*)app;
+                        return (Controllable*)app1;
+                    }
+                }
+            }
+            return (Controllable*)nullptr;
+        };
         while (Serial2.available()) {
             uint8_t data = Serial2.read();
             switch (data) {
             case 0xE7: // back
                 LOG_INFO("Key press [back]");
-                for (auto app : inkhud->userApplets) {
-                    if (app->isForeground() && Controllable::checkControllable(app) != Controllable::Types::Uncontrollable) {
-                        ((Controllable*)app)->handleBack();
-                        break;
-                    }
+                {
+                    auto app = getActiveControllable();
+                    if (app)
+                        app->handleBack();
                 }
                 break;
             case 0xE8: // up
                 LOG_INFO("Key press [up]");
-                for (auto app : inkhud->userApplets) {
-                    if (app->isForeground() && Controllable::checkControllable(app) != Controllable::Types::Uncontrollable) {
-                        ((Controllable*)app)->handleUp();
-                        break;
-                    }
+                {
+                    auto app = getActiveControllable();
+                    if (app)
+                        app->handleUp();
                 }
                 break;
             case 0xE9: // enter
                 LOG_INFO("Key press [enter]");
-                for (auto app : inkhud->userApplets) {
-                    if (app->isForeground() && Controllable::checkControllable(app) != Controllable::Types::Uncontrollable) {
-                        if (!((Controllable*)app)->handleEnter())
-                            inkhud->openMenu();
-                        break;
+                {
+                    auto app = getActiveControllable();
+                    if (app) {
+                        if (!app->handleEnter())
+                            inkhud->nextApplet();
+                    }
+                    else {
+                        inkhud->nextApplet();
                     }
                 }
                 break;
@@ -487,16 +503,15 @@ int32_t InkHUD::InputMenuApplet::runOnce()
                         inkhud->nextTile();
                 }
                 else {
-                    inkhud->nextApplet();
+                    inkhud->prevApplet();
                 }
                 break;
             case 0xEB: // down
                 LOG_INFO("Key press [down]");
-                for (auto app : inkhud->userApplets) {
-                    if (app->isForeground() && Controllable::checkControllable(app) != Controllable::Types::Uncontrollable) {
-                        ((Controllable*)app)->handleDown();
-                        break;
-                    }
+                {
+                    auto app = getActiveControllable();
+                    if (app)
+                        app->handleDown();
                 }
                 break;
             case 0xEC: // right
@@ -513,7 +528,7 @@ int32_t InkHUD::InputMenuApplet::runOnce()
             requestUpdate(Drivers::EInk::UpdateTypes::FAST);
         }
     }
-    return 50;
+    return 100;
 #else
     sendToBackground();
     return OSThread::disable();
@@ -756,13 +771,15 @@ void InkHUD::InputMenuApplet::onButtonLongPress()
 
 void InkHUD::InputMenuApplet::handleKeyboardPress()
 {
-    void* ctrlPtr = nullptr;
+    Applet* ctrlPtr0 = nullptr;
     Controllable::Types ctrlType = Controllable::Types::Uncontrollable;
     bool bBorrowed = false;
     if (neighborTileOwner && Controllable::checkControllable(neighborTileOwner) != Controllable::Types::Uncontrollable) {
+        ctrlPtr0 = neighborTileOwner;
         ctrlType = Controllable::checkControllable(neighborTileOwner);
     }
     else if (borrowedTileOwner && Controllable::checkControllable(borrowedTileOwner) != Controllable::Types::Uncontrollable) {
+        ctrlPtr0 = borrowedTileOwner;
         ctrlType = Controllable::checkControllable(borrowedTileOwner);
         bBorrowed = true;
     }
@@ -795,7 +812,8 @@ void InkHUD::InputMenuApplet::handleKeyboardPress()
     else {
         if (selKB == 0) {
             if (selRow == 0) {
-                if (ctrlPtr && ctrlType == Controllable::Types::ThreadedMessage) {
+                if (ctrlPtr0 && ctrlType == Controllable::Types::ThreadedMessage) {
+                    auto ctrlPtr = (ThreadedMessageApplet*)ctrlPtr0;
                     std::string message = currentInput;
                     currentInput.clear();
                     currentCIM.clear();
@@ -806,7 +824,7 @@ void InkHUD::InputMenuApplet::handleKeyboardPress()
                     selCol = -1;
                     selRow = -1;
 #endif //defined(MOD_UART_KEYBOARD_12KEY)
-                    sendText(NODENUM_BROADCAST, ((ThreadedMessageApplet*)ctrlPtr)->getChannelIndex(), message);
+                    sendText(NODENUM_BROADCAST, ctrlPtr->getChannelIndex(), message);
                     if (bBorrowed)
                         sendToBackground();
                 }
@@ -821,8 +839,9 @@ void InkHUD::InputMenuApplet::handleKeyboardPress()
                     sendToBackground();
                 }
                 else if (selCol == 2) {
-                    if (ctrlPtr && ctrlType == Controllable::Types::ThreadedMessage) {
-                        sendText(NODENUM_BROADCAST, ((ThreadedMessageApplet*)ctrlPtr)->getChannelIndex(), "@ab");
+                    if (ctrlPtr0 && ctrlType == Controllable::Types::ThreadedMessage) {
+                        auto ctrlPtr = (ThreadedMessageApplet*)ctrlPtr0;
+                        sendText(NODENUM_BROADCAST, ctrlPtr->getChannelIndex(), "@ab");
                         if (bBorrowed)
                             sendToBackground();
                     }
@@ -858,15 +877,26 @@ void InkHUD::InputMenuApplet::handleKeyboardPress()
 #endif //defined(MOD_UART_KEYBOARD_12KEY)
                 }
                 else {
-                    if (ctrlPtr) {
-                        if (selCol == 2) {
-                            ((Controllable*)ctrlPtr)->handleUp();
+                    Controllable* ctrlPtr = nullptr;
+                    if (ctrlPtr0) {
+                        if (ctrlType == Controllable::Types::ThreadedMessage) {
+                            auto ctrlPtr1 = (ThreadedMessageApplet*)ctrlPtr0;
+                            ctrlPtr = (Controllable*)ctrlPtr1;
                         }
-                        else if (selCol == 3) {
-                            ((Controllable*)ctrlPtr)->handleDown();
+                        else if (ctrlType == Controllable::Types::Heard) {
+                            auto ctrlPtr1 = (HeardApplet*)ctrlPtr0;
+                            ctrlPtr = (Controllable*)ctrlPtr1;
                         }
-                        if (bBorrowed)
-                            sendToBackground();
+                        if (ctrlPtr) {
+                            if (selCol == 2) {
+                                ctrlPtr->handleUp();
+                            }
+                            else if (selCol == 3) {
+                                ctrlPtr->handleDown();
+                            }
+                            if (bBorrowed)
+                                sendToBackground();
+                        }
                     }
                 }
             }

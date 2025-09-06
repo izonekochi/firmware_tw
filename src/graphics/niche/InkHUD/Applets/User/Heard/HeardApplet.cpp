@@ -24,6 +24,15 @@ void InkHUD::HeardApplet::onDeactivate()
 // We need to store it (at front to sort recent), and request display update if our list has visibly changed as a result
 void InkHUD::HeardApplet::handleParsed(CardInfo c)
 {
+#if defined(MOD_INPUT_MENU)
+    if (beginCard > 0) {
+        populateFromNodeDB();
+        if (isForeground())
+            requestUpdate();
+    }
+    lastStrength[c.nodeNum] = c.signal;
+    LOG_INFO("HeartApplet: heard node !%x, signal=%d", c.nodeNum, static_cast<int>(c.signal));
+#endif //defined(MOD_INPUT_MENU)
     // Grab the previous entry.
     // To check if the new data is different enough to justify re-render
     // Need to cache now, before we manipulate the deque
@@ -75,14 +84,27 @@ void InkHUD::HeardApplet::populateFromNodeDB()
 
     // Keep the most recent entries only
     // Just enough to fill the screen
+#if defined(MOD_INPUT_MENU)
+    cards.clear();
+    if (ordered.size() > maxCards()) {
+        for (size_t i = 0; i < maxCards() && i + beginCard < ordered.size(); i++)
+            ordered[i] = ordered[i + beginCard];
+        ordered.resize(maxCards());
+    }
+#else //!defined(MOD_INPUT_MENU)
     if (ordered.size() > maxCards())
         ordered.resize(maxCards());
+#endif //defined(MOD_INPUT_MENU)
 
     // Create card info for these (stale) node observations
     meshtastic_NodeInfoLite *ourNode = nodeDB->getMeshNode(nodeDB->getNodeNum());
     for (meshtastic_NodeInfoLite *node : ordered) {
         CardInfo c;
         c.nodeNum = node->num;
+        if (lastStrength.find(c.nodeNum) != lastStrength.cend())
+            c.signal = lastStrength[c.nodeNum];
+        else
+            c.signal = getSignalStrength(node->snr, -100.0f);
 
         if (node->has_hops_away)
             c.hopsAway = node->hops_away;
@@ -120,5 +142,43 @@ std::string InkHUD::HeardApplet::getHeaderText()
 
     return text;
 }
+
+#if defined(MOD_INPUT_MENU)
+bool InkHUD::HeardApplet::handleUp()
+{
+    if (beginCard > 0) {
+        beginCard--;
+        LOG_INFO("HeardApplet: beginCard=%u", beginCard);
+        populateFromNodeDB();
+        requestUpdate(NicheGraphics::Drivers::EInk::FAST);
+        return true;
+    }
+    return false;
+}
+
+bool InkHUD::HeardApplet::handleDown()
+{
+    if (cards.size() == maxCards() && beginCard + maxCards() < nodeDB->meshNodes->size()) {
+        beginCard++;
+        LOG_INFO("HeardApplet: beginCard=%u", beginCard);
+        populateFromNodeDB();
+        requestUpdate(NicheGraphics::Drivers::EInk::FAST);
+        return true;
+    }
+    return false;
+}
+bool InkHUD::HeardApplet::handleBack()
+{
+    if (beginCard != 0) {
+        beginCard = 0;
+        LOG_INFO("HeardApplet: beginCard=%u", beginCard);
+        populateFromNodeDB();
+        requestUpdate(NicheGraphics::Drivers::EInk::FAST);
+        return true;
+    }
+    return false;
+}
+
+#endif //defined(MOD_INPUT_MENU)
 
 #endif

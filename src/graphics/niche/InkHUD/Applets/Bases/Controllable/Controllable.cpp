@@ -14,6 +14,14 @@ namespace NicheGraphics::InkHUD {
         return false;
     }
     
+    bool Controllable::handleLeft() {
+        return false;
+    }
+    
+    bool Controllable::handleRight() {
+        return false;
+    }
+    
     bool Controllable::handleEnter() {
         return false;
     }
@@ -32,6 +40,9 @@ namespace NicheGraphics::InkHUD {
 
 
     Controllable::Types Controllable::checkControllable(const void* ptr) {
+        //for (auto it : instances)
+        //    LOG_INFO("KBOT::Controllable list[0x%x]: %d", it.first, static_cast<int>(it.second));
+        //LOG_INFO("KBOT::Controllable check[0x%x]", ptr);
         return instances.find(ptr) == instances.cend() ? Types::Uncontrollable : instances[ptr];
     }
 

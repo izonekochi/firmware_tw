@@ -196,6 +196,62 @@ void InkHUD::WindowManager::nextApplet()
     inkhud->forceUpdate(EInk::UpdateTypes::FAST); // bringToForeground already requested, but we're manually forcing FAST
 }
 
+#if defined(MOD_INPUT_MENU)
+// On the currently focussed tile: cycle to the previous available user applet
+// Applets available for this must be activated, and not already displayed on another tile
+void InkHUD::WindowManager::prevApplet()
+{
+    Tile *t = userTiles.at(settings->userTiles.focused);
+
+    // Abort if zero applets available
+    // nullptr means WindowManager::refocusTile determined that there were no available applets
+    if (!t->getAssignedApplet())
+        return;
+
+    // Find the index of the applet currently shown on the tile
+    uint8_t appletIndex = -1;
+    for (uint8_t i = 0; i < inkhud->userApplets.size(); i++) {
+        if (inkhud->userApplets.at(i) == t->getAssignedApplet()) {
+            appletIndex = i;
+            break;
+        }
+    }
+
+    // Confirm that we did find the applet
+    assert(appletIndex != (uint8_t)-1);
+
+    // Iterate forward through the WindowManager::applets, looking for the next valid applet
+    Applet *nextValidApplet = nullptr;
+    for (uint8_t i = 1; i < inkhud->userApplets.size(); i++) {
+        uint8_t newAppletIndex = (appletIndex + inkhud->userApplets.size() - i) % inkhud->userApplets.size();
+        Applet *a = inkhud->userApplets.at(newAppletIndex);
+
+        // Looking for an applet which is active (enabled by user), but currently in background
+        if (a->isActive() && !a->isForeground()) {
+            nextValidApplet = a;
+            settings->userTiles.displayedUserApplet[settings->userTiles.focused] =
+                newAppletIndex; // Remember this setting between boots!
+            break;
+        }
+    }
+
+    // Confirm that we found another applet
+    if (!nextValidApplet)
+        return;
+
+    // Hide old applet, show new applet
+    t->getAssignedApplet()->sendToBackground();
+    t->assignApplet(nextValidApplet);
+    nextValidApplet->bringToForeground();
+    inkhud->forceUpdate(EInk::UpdateTypes::FAST); // bringToForeground already requested, but we're manually forcing FAST
+}
+
+InkHUD::Tile* InkHUD::WindowManager::getFocusedTile()
+{
+    return userTiles.at(settings->userTiles.focused);
+}
+#endif //defined(MOD_INPUT_MENU)
+
 // Rotate the display image by 90 degrees
 void InkHUD::WindowManager::rotate()
 {

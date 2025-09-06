@@ -61,6 +61,10 @@ class InkHUD
     // - suitable(?) for use by aux button, connected in variant nicheGraphics.h
 
     void nextApplet();
+#if defined(MOD_INPUT_MENU)
+    void prevApplet();
+    Tile* getFocusedTile();
+#endif //defined(MOD_INPUT_MENU)
     void openMenu();
     void nextTile();
     void rotate();

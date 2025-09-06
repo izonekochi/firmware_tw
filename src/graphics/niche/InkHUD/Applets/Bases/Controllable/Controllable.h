@@ -11,10 +11,14 @@ namespace NicheGraphics::InkHUD {
         enum class Types {
             Uncontrollable,
             ThreadedMessage,
+            Heard,
+            RecentList,
         };
         virtual ~Controllable() = default;
         virtual bool handleUp();
         virtual bool handleDown();
+        virtual bool handleLeft();
+        virtual bool handleRight();
         virtual bool handleEnter();
         virtual bool handleBack();
         static void registerControllable(const void* ptr, Types type);

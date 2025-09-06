@@ -88,6 +88,22 @@ void InkHUD::InkHUD::nextApplet()
     windowManager->nextApplet();
 }
 
+#if defined(MOD_INPUT_MENU)
+
+// Cycle the next user applet to the foreground
+// Only activated applets are cycled
+// If user has a multi-applet layout, the applets will cycle on the "focused tile"
+void InkHUD::InkHUD::prevApplet()
+{
+    windowManager->prevApplet();
+}
+
+InkHUD::Tile* InkHUD::InkHUD::getFocusedTile()
+{
+    return windowManager->getFocusedTile();
+}
+#endif //defined(MOD_INPUT_MENU)
+
 // Show the menu (on the the focused tile)
 // The applet previously displayed there will be restored once the menu closes
 void InkHUD::InkHUD::openMenu()
