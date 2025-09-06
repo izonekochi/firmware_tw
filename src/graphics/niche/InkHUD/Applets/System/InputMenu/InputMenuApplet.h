@@ -6,6 +6,7 @@
 #include "graphics/niche/InkHUD/InkHUD.h"
 #include "graphics/niche/InkHUD/Persistence.h"
 #include "graphics/niche/InkHUD/SystemApplet.h"
+#include "graphics/niche/InkHUD/Applets/Bases/Controllable/Controllable.h"
 
 #include "Channels.h"
 #include "concurrency/OSThread.h"
@@ -38,11 +39,17 @@ class InputMenuApplet : public SystemApplet, public concurrency::OSThread {
     int16_t selMode = 0, selKB = -1, selRow = -1, selCol = -1, selResult = -1, selTarget = -1;
 
     uint32_t autoHideMillis = 0;
+    uint32_t comboStartMillis = 0;
+    uint8_t comboPressCount = 0;
     bool touchLocked = false;
 
     Drivers::LatchingBacklight *backlight = nullptr; // Convenient access to the backlight singleton
     
     int32_t runOnce() override;
+
+    Controllable* getActiveControllable();
+    void handleMenuVKey(const uint8_t code);
+    void handleBackgroundVKey(const uint8_t code);
 
     void handleKeyboardPress();
 

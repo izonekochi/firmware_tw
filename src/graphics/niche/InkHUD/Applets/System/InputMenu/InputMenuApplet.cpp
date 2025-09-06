@@ -186,7 +186,7 @@ void InkHUD::InputMenuApplet::onForeground()
     // Begin the auto-close timeout
 #if defined(MOD_UART_KEYBOARD_12KEY)
     autoHideMillis = millis() + INPUT_TIMEOUT_SEC * 1000UL;
-    OSThread::setIntervalFromNow(50);
+    OSThread::setIntervalFromNow(100);
     while (Serial2.available()) // empty the buffer first after being foreground
         Serial2.read();
 #else //!defined(MOD_UART_KEYBOARD_12KEY)
@@ -207,7 +207,7 @@ void InkHUD::InputMenuApplet::onBackground()
     }
 
 #if defined(MOD_UART_KEYBOARD_12KEY)
-    OSThread::setIntervalFromNow(50);
+    OSThread::setIntervalFromNow(100);
 #else //!defined(MOD_UART_KEYBOARD_12KEY)
     OSThread::disable();
 #endif //defined(MOD_UART_KEYBOARD_12KEY)
@@ -257,279 +257,43 @@ int32_t InkHUD::InputMenuApplet::runOnce()
 {
 #if defined(MOD_UART_KEYBOARD_12KEY)
     if (isForeground()) {
-        if (millis() > autoHideMillis) {
+        if (millis() > autoHideMillis)
             sendToBackground();
-        }
         while (Serial2.available()) {
             autoHideMillis = millis() + INPUT_TIMEOUT_SEC * 1000UL;
-            uint8_t data = Serial2.read();
-            switch (data) {
-            case 0xE7: // back
-                LOG_INFO("Key press [back]");
-                if (selMode == 0) { // select KB
-                    sendToBackground();
-                }
-                else if (selMode == 1 || selMode == 2) { // select row / col
-                    selMode = 0;
-                }
-                else if (selMode == 3) { // select result
-                    currentCIM.clear();
-                    currentCIMKeys.clear();
-                    currentCIMResults.clear();
-                    selMode = 2;
-                }
-                else { // select send target
-                    selMode = 2;
-                }
-                break;
-            case 0xE8: // up
-                LOG_INFO("Key press [up]");
-                if (selMode == 0) { // select KB
-                    sendToBackground();
-                }
-                else if (selMode == 1 || selMode == 2) { // select row / col
-                    if (selMode == 1) { // auto upgrade to mode 2
-                        selMode = 2;
-                        selCol = 0;
-                    }
-                    if (selRow <= 0)
-                        selRow = std::get<1>(keyboards[selKB]).size() - 1;
-                    else
-                        selRow--;
-                }
-                else if (selMode == 3) { // select result
-                    if (selResult / 10 <= 0) {
-                        selResult = currentCIMResults.size() - currentCIMResults.size() % 10;
-                    }
-                    else {
-                        selResult -= 10;
-                    }
-                }
-                else { // select send target
-                    if (selTarget <= 0)
-                        selTarget = sendTargets.size() - 1;
-                    else
-                        selTarget--;
-                }
-                break;
-            case 0xE9: // enter
-                LOG_INFO("Key press [enter]");
-                if (selMode == 0) { // select KB
-                    if (selKB >= 0 && selKB < (int16_t)keyboards.size()) {
-                        selMode = 2; // go into detailed mode
-                        selRow = 0;
-                        selCol = 0;
-                    }
-                }
-                else if (selMode == 1) { // select row
-                    if (selRow >= 0 && selCol >= 0 && selRow < (int16_t)std::get<1>(keyboards[selKB]).size() && selCol < (int16_t)std::get<1>(keyboards[selKB])[selRow].size()) {
-                        selMode = 2;
-                    }
-                }
-                else if (selMode == 2) { // select row/col
-                    if (selRow >= 0 && selCol >= 0 && selRow < (int16_t)std::get<1>(keyboards[selKB]).size() && selCol < (int16_t)std::get<1>(keyboards[selKB])[selRow].size()) {
-                        handleKeyboardPress();
-                    }
-                }
-                else if (selMode == 3) { // select result
-                    if (selResult >= 0 && selResult < (int16_t)currentCIMResults.size())
-                        handleKeyboardPress();
-                }
-                else { // select send target
-                    if (selTarget >= 0 && selTarget < (int16_t)sendTargets.size())
-                        handleKeyboardPress();
-                }
-                break;
-            case 0xEA: // left
-                LOG_INFO("Key press [left]");
-                if (selMode == 0) { // select KB
-                    if (selKB <= 0)
-                        selKB = keyboards.size() - 1;
-                    else
-                        selKB--;
-                }
-                else if (selMode == 1 || selMode == 2) { // select row / col
-                    if (selMode == 1) {
-                        selMode = 2;
-                        selCol = 0;
-                    }
-                    if (selRow >= 0 && selRow < (int16_t)std::get<1>(keyboards[selKB]).size()) {
-                        if (selCol <= 0)
-                            selCol = std::get<1>(keyboards[selKB])[selRow].size() - 1;
-                        else
-                            selCol--;
-                    }
-                }
-                else if (selMode == 3) { // select result
-                    if (selResult <= 0)
-                        selResult = currentCIMResults.size() - 1;
-                    else
-                        selResult--;
-                }
-                else { // select send target
-                    if (selTarget <= 0)
-                        selTarget = sendTargets.size() - 1;
-                    else
-                        selTarget--;
-                }
-                break;
-            case 0xEB: // down
-                LOG_INFO("Key press [down]");
-                if (selMode == 0) { // select KB
-                    if (selKB >= 0 && selKB < (int16_t)keyboards.size()) {
-                        selMode = 2; // go into detailed mode
-                        selRow = 0;
-                        selCol = 0;
-                    }
-                }
-                else if (selMode == 1 || selMode == 2) { // select row / col
-                    if (selMode == 1) { // auto upgrade to mode 2
-                        selMode = 2;
-                        selCol = 0;
-                    }
-                    if (selRow == (int16_t)std::get<1>(keyboards[selKB]).size() - 1)
-                        selRow = 0;
-                    else
-                        selRow++;
-                }
-                else if (selMode == 3) { // select result
-                    if (selResult == (int16_t)currentCIMResults.size() - 1) {
-                        selResult = 0;
-                    }
-                    else if (selResult + 10 >= (int16_t)currentCIMResults.size()) {
-                        selResult = currentCIMResults.size() - 1;
-                    }
-                    else {
-                        selResult += 10;
-                    }
-                }
-                else { // select send target
-                    if (selTarget == (int16_t)sendTargets.size() - 1)
-                        selTarget = 0;
-                    else
-                        selTarget++;
-                }
-                break;
-            case 0xEC: // right
-                LOG_INFO("Key press [right]");
-                if (selMode == 0) { // select KB
-                    if (selKB == (int16_t)keyboards.size() - 1)
-                        selKB = 0;
-                    else
-                        selKB++;
-                }
-                else if (selMode == 1 || selMode == 2) { // select row / col
-                    if (selMode == 1) {
-                        selMode = 2;
-                        selCol = 0;
-                    }
-                    if (selRow >= 0 && selRow < (int16_t)std::get<1>(keyboards[selKB]).size()) {
-                        if (selCol == (int16_t)std::get<1>(keyboards[selKB])[selRow].size() - 1)
-                            selCol = 0;
-                        else
-                            selCol++;
-                    }
-                }
-                else if (selMode == 3) { // select result
-                    if (selResult == (int16_t)currentCIMResults.size() - 1)
-                        selResult = 0;
-                    else
-                        selResult++;
-                }
-                else { // select send target
-                    if (selTarget == (int16_t)sendTargets.size() - 1)
-                        selTarget = 0;
-                    else
-                        selTarget++;
-                }
-                break;
-            }
-            requestUpdate(Drivers::EInk::UpdateTypes::FAST);
+            handleMenuVKey(Serial2.read());
         }
     }
     else {
-        auto getActiveControllable = [this]() {
-            for (auto app : inkhud->userApplets) {
-                if (app->isForeground() && app->getTile() == inkhud->getFocusedTile()) {
-                    const auto type = Controllable::checkControllable(app);
-                    if (type == Controllable::Types::ThreadedMessage) {
-                        auto app1 = (ThreadedMessageApplet*)app;
-                        return (Controllable*)app1;
-                    }
-                    else if (type == Controllable::Types::Heard) {
-                        auto app1 = (HeardApplet*)app;
-                        return (Controllable*)app1;
-                    }
-                }
+        if (comboPressCount > 0) {
+            if (millis() - comboStartMillis > comboPressCount * 300) {
+                comboPressCount = 0;
+                handleBackgroundVKey(0xE7);
             }
-            return (Controllable*)nullptr;
-        };
+        }
         while (Serial2.available()) {
-            uint8_t data = Serial2.read();
-            switch (data) {
-            case 0xE7: // back
-                LOG_INFO("Key press [back]");
-                if (!touchLocked) {
-                    auto app = getActiveControllable();
-                    if (app)
-                        app->handleBack();
+            const uint8_t code = Serial2.read();
+            if (code == 0xE7) {
+                const auto now = millis();
+                if (comboPressCount == 0) {
+                    comboStartMillis = now;
+                    comboPressCount = 1;
                 }
-                break;
-            case 0xE8: // up
-                LOG_INFO("Key press [up]");
-                if (!touchLocked) {
-                    auto app = getActiveControllable();
-                    if (app)
-                        app->handleUp();
-                }
-                break;
-            case 0xE9: // enter
-                LOG_INFO("Key press [enter]");
-                if (!touchLocked) {
-                    auto app = getActiveControllable();
-                    if (app) {
-                        if (!app->handleEnter())
-                            inkhud->nextApplet();
-                    }
-                    else {
-                        inkhud->nextApplet();
+                else if (now - comboStartMillis <= comboPressCount * 300) {
+                    comboPressCount++;
+                    if (comboPressCount >= 3) {
+                        touchLocked = !touchLocked;
+                        comboPressCount = 0;
                     }
                 }
-                break;
-            case 0xEA: // left
-                LOG_INFO("Key press [left]");
-                if (!touchLocked) {
-                    if (settings->userTiles.count > 1) {
-                        if (settings->userTiles.focused > 0)
-                            inkhud->nextTile();
-                    }
-                    else {
-                        inkhud->prevApplet();
-                    }
+                else {
+                    handleBackgroundVKey(code);
+                    comboPressCount = 0;
                 }
-                break;
-            case 0xEB: // down
-                LOG_INFO("Key press [down]");
-                if (!touchLocked) {
-                    auto app = getActiveControllable();
-                    if (app)
-                        app->handleDown();
-                }
-                break;
-            case 0xEC: // right
-                LOG_INFO("Key press [right]");
-                if (!touchLocked) {
-                    if (settings->userTiles.count > 1) {
-                        if (settings->userTiles.focused == 0)
-                            inkhud->nextTile();
-                    }
-                    else {
-                        inkhud->nextApplet();
-                    }
-                }
-                break;
             }
-            requestUpdate(Drivers::EInk::UpdateTypes::FAST);
+            else {
+                handleBackgroundVKey(code);
+            }
         }
     }
     return 100;
@@ -537,6 +301,276 @@ int32_t InkHUD::InputMenuApplet::runOnce()
     sendToBackground();
     return OSThread::disable();
 #endif
+}
+
+InkHUD::Controllable* InkHUD::InputMenuApplet::getActiveControllable() {
+    for (auto app : inkhud->userApplets) {
+        if (app->isForeground() && app->getTile() == inkhud->getFocusedTile()) {
+            const auto type = Controllable::checkControllable(app);
+            if (type == Controllable::Types::ThreadedMessage) {
+                auto app1 = (ThreadedMessageApplet*)app;
+                return app1;
+            }
+            else if (type == Controllable::Types::Heard) {
+                auto app1 = (HeardApplet*)app;
+                return app1;
+            }
+        }
+    }
+    return nullptr;
+}
+
+
+void InkHUD::InputMenuApplet::handleMenuVKey(const uint8_t code) {
+    switch (code) {
+    case 0xE7: // back
+        LOG_INFO("Key press [back]");
+        if (selMode == 0) { // select KB
+            sendToBackground();
+        }
+        else if (selMode == 1 || selMode == 2) { // select row / col
+            selMode = 0;
+        }
+        else if (selMode == 3) { // select result
+            currentCIM.clear();
+            currentCIMKeys.clear();
+            currentCIMResults.clear();
+            selMode = 2;
+        }
+        else { // select send target
+            selMode = 2;
+        }
+        break;
+    case 0xE8: // up
+        LOG_INFO("Key press [up]");
+        if (selMode == 0) { // select KB
+            sendToBackground();
+        }
+        else if (selMode == 1 || selMode == 2) { // select row / col
+            if (selMode == 1) { // auto upgrade to mode 2
+                selMode = 2;
+                selCol = 0;
+            }
+            if (selRow <= 0)
+                selRow = std::get<1>(keyboards[selKB]).size() - 1;
+            else
+                selRow--;
+        }
+        else if (selMode == 3) { // select result
+            if (selResult / 10 <= 0) {
+                selResult = currentCIMResults.size() - currentCIMResults.size() % 10;
+            }
+            else {
+                selResult -= 10;
+            }
+        }
+        else { // select send target
+            if (selTarget <= 0)
+                selTarget = sendTargets.size() - 1;
+            else
+                selTarget--;
+        }
+        break;
+    case 0xE9: // enter
+        LOG_INFO("Key press [enter]");
+        if (selMode == 0) { // select KB
+            if (selKB >= 0 && selKB < (int16_t)keyboards.size()) {
+                selMode = 2; // go into detailed mode
+                selRow = 0;
+                selCol = 0;
+            }
+        }
+        else if (selMode == 1) { // select row
+            if (selRow >= 0 && selCol >= 0 && selRow < (int16_t)std::get<1>(keyboards[selKB]).size() && selCol < (int16_t)std::get<1>(keyboards[selKB])[selRow].size()) {
+                selMode = 2;
+            }
+        }
+        else if (selMode == 2) { // select row/col
+            if (selRow >= 0 && selCol >= 0 && selRow < (int16_t)std::get<1>(keyboards[selKB]).size() && selCol < (int16_t)std::get<1>(keyboards[selKB])[selRow].size()) {
+                handleKeyboardPress();
+            }
+        }
+        else if (selMode == 3) { // select result
+            if (selResult >= 0 && selResult < (int16_t)currentCIMResults.size())
+                handleKeyboardPress();
+        }
+        else { // select send target
+            if (selTarget >= 0 && selTarget < (int16_t)sendTargets.size())
+                handleKeyboardPress();
+        }
+        break;
+    case 0xEA: // left
+        LOG_INFO("Key press [left]");
+        if (selMode == 0) { // select KB
+            if (selKB <= 0)
+                selKB = keyboards.size() - 1;
+            else
+                selKB--;
+        }
+        else if (selMode == 1 || selMode == 2) { // select row / col
+            if (selMode == 1) {
+                selMode = 2;
+                selCol = 0;
+            }
+            if (selRow >= 0 && selRow < (int16_t)std::get<1>(keyboards[selKB]).size()) {
+                if (selCol <= 0)
+                    selCol = std::get<1>(keyboards[selKB])[selRow].size() - 1;
+                else
+                    selCol--;
+            }
+        }
+        else if (selMode == 3) { // select result
+            if (selResult <= 0)
+                selResult = currentCIMResults.size() - 1;
+            else
+                selResult--;
+        }
+        else { // select send target
+            if (selTarget <= 0)
+                selTarget = sendTargets.size() - 1;
+            else
+                selTarget--;
+        }
+        break;
+    case 0xEB: // down
+        LOG_INFO("Key press [down]");
+        if (selMode == 0) { // select KB
+            if (selKB >= 0 && selKB < (int16_t)keyboards.size()) {
+                selMode = 2; // go into detailed mode
+                selRow = 0;
+                selCol = 0;
+            }
+        }
+        else if (selMode == 1 || selMode == 2) { // select row / col
+            if (selMode == 1) { // auto upgrade to mode 2
+                selMode = 2;
+                selCol = 0;
+            }
+            if (selRow == (int16_t)std::get<1>(keyboards[selKB]).size() - 1)
+                selRow = 0;
+            else
+                selRow++;
+        }
+        else if (selMode == 3) { // select result
+            if (selResult == (int16_t)currentCIMResults.size() - 1) {
+                selResult = 0;
+            }
+            else if (selResult + 10 >= (int16_t)currentCIMResults.size()) {
+                selResult = currentCIMResults.size() - 1;
+            }
+            else {
+                selResult += 10;
+            }
+        }
+        else { // select send target
+            if (selTarget == (int16_t)sendTargets.size() - 1)
+                selTarget = 0;
+            else
+                selTarget++;
+        }
+        break;
+    case 0xEC: // right
+        LOG_INFO("Key press [right]");
+        if (selMode == 0) { // select KB
+            if (selKB == (int16_t)keyboards.size() - 1)
+                selKB = 0;
+            else
+                selKB++;
+        }
+        else if (selMode == 1 || selMode == 2) { // select row / col
+            if (selMode == 1) {
+                selMode = 2;
+                selCol = 0;
+            }
+            if (selRow >= 0 && selRow < (int16_t)std::get<1>(keyboards[selKB]).size()) {
+                if (selCol == (int16_t)std::get<1>(keyboards[selKB])[selRow].size() - 1)
+                    selCol = 0;
+                else
+                    selCol++;
+            }
+        }
+        else if (selMode == 3) { // select result
+            if (selResult == (int16_t)currentCIMResults.size() - 1)
+                selResult = 0;
+            else
+                selResult++;
+        }
+        else { // select send target
+            if (selTarget == (int16_t)sendTargets.size() - 1)
+                selTarget = 0;
+            else
+                selTarget++;
+        }
+        break;
+    }
+    requestUpdate(Drivers::EInk::UpdateTypes::FAST);
+}
+
+void InkHUD::InputMenuApplet::handleBackgroundVKey(const uint8_t code) {
+    switch (code) {
+    case 0xE7: // back
+        LOG_INFO("Key press [back]");
+        if (!touchLocked) {
+            auto app = getActiveControllable();
+            if (app)
+                app->handleBack();
+        }
+        break;
+    case 0xE8: // up
+        LOG_INFO("Key press [up]");
+        if (!touchLocked) {
+            auto app = getActiveControllable();
+            if (app)
+                app->handleUp();
+        }
+        break;
+    case 0xE9: // enter
+        LOG_INFO("Key press [enter]");
+        if (!touchLocked) {
+            auto app = getActiveControllable();
+            if (app) {
+                if (!app->handleEnter())
+                    inkhud->nextApplet();
+            }
+            else {
+                inkhud->nextApplet();
+            }
+        }
+        break;
+    case 0xEA: // left
+        LOG_INFO("Key press [left]");
+        if (!touchLocked) {
+            if (settings->userTiles.count > 1) {
+                if (settings->userTiles.focused > 0)
+                    inkhud->nextTile();
+            }
+            else {
+                inkhud->prevApplet();
+            }
+        }
+        break;
+    case 0xEB: // down
+        LOG_INFO("Key press [down]");
+        if (!touchLocked) {
+            auto app = getActiveControllable();
+            if (app)
+                app->handleDown();
+        }
+        break;
+    case 0xEC: // right
+        LOG_INFO("Key press [right]");
+        if (!touchLocked) {
+            if (settings->userTiles.count > 1) {
+                if (settings->userTiles.focused == 0)
+                    inkhud->nextTile();
+            }
+            else {
+                inkhud->nextApplet();
+            }
+        }
+        break;
+    }
+    requestUpdate(Drivers::EInk::UpdateTypes::FAST);
 }
 
 void InkHUD::InputMenuApplet::onRender()
