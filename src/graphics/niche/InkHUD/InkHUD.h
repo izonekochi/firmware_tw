@@ -64,6 +64,7 @@ class InkHUD
 #if defined(MOD_INPUT_MENU)
     void prevApplet();
     Tile* getFocusedTile();
+    uint8_t getAppletIndex(Applet* app);
 #endif //defined(MOD_INPUT_MENU)
     void openMenu();
     void nextTile();

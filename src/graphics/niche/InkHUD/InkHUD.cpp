@@ -89,7 +89,6 @@ void InkHUD::InkHUD::nextApplet()
 }
 
 #if defined(MOD_INPUT_MENU)
-
 // Cycle the next user applet to the foreground
 // Only activated applets are cycled
 // If user has a multi-applet layout, the applets will cycle on the "focused tile"
@@ -101,6 +100,14 @@ void InkHUD::InkHUD::prevApplet()
 InkHUD::Tile* InkHUD::InkHUD::getFocusedTile()
 {
     return windowManager->getFocusedTile();
+}
+
+uint8_t InkHUD::InkHUD::getAppletIndex(Applet* app)
+{
+    for (uint8_t idx = 0; idx < userApplets.size(); idx++)
+        if (userApplets[idx] == app)
+            return idx;
+    return 0;
 }
 #endif //defined(MOD_INPUT_MENU)
 

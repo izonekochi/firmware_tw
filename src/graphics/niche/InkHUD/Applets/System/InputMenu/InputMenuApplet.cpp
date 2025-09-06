@@ -469,7 +469,7 @@ int32_t InkHUD::InputMenuApplet::runOnce()
             switch (data) {
             case 0xE7: // back
                 LOG_INFO("Key press [back]");
-                {
+                if (!touchLocked) {
                     auto app = getActiveControllable();
                     if (app)
                         app->handleBack();
@@ -477,7 +477,7 @@ int32_t InkHUD::InputMenuApplet::runOnce()
                 break;
             case 0xE8: // up
                 LOG_INFO("Key press [up]");
-                {
+                if (!touchLocked) {
                     auto app = getActiveControllable();
                     if (app)
                         app->handleUp();
@@ -485,7 +485,7 @@ int32_t InkHUD::InputMenuApplet::runOnce()
                 break;
             case 0xE9: // enter
                 LOG_INFO("Key press [enter]");
-                {
+                if (!touchLocked) {
                     auto app = getActiveControllable();
                     if (app) {
                         if (!app->handleEnter())
@@ -498,17 +498,19 @@ int32_t InkHUD::InputMenuApplet::runOnce()
                 break;
             case 0xEA: // left
                 LOG_INFO("Key press [left]");
-                if (settings->userTiles.count > 1) {
-                    if (settings->userTiles.focused > 0)
-                        inkhud->nextTile();
-                }
-                else {
-                    inkhud->prevApplet();
+                if (!touchLocked) {
+                    if (settings->userTiles.count > 1) {
+                        if (settings->userTiles.focused > 0)
+                            inkhud->nextTile();
+                    }
+                    else {
+                        inkhud->prevApplet();
+                    }
                 }
                 break;
             case 0xEB: // down
                 LOG_INFO("Key press [down]");
-                {
+                if (!touchLocked) {
                     auto app = getActiveControllable();
                     if (app)
                         app->handleDown();
@@ -516,12 +518,14 @@ int32_t InkHUD::InputMenuApplet::runOnce()
                 break;
             case 0xEC: // right
                 LOG_INFO("Key press [right]");
-                if (settings->userTiles.count > 1) {
-                    if (settings->userTiles.focused == 0)
-                        inkhud->nextTile();
-                }
-                else {
-                    inkhud->nextApplet();
+                if (!touchLocked) {
+                    if (settings->userTiles.count > 1) {
+                        if (settings->userTiles.focused == 0)
+                            inkhud->nextTile();
+                    }
+                    else {
+                        inkhud->nextApplet();
+                    }
                 }
                 break;
             }

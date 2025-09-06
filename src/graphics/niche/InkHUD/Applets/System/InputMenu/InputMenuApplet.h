@@ -38,6 +38,7 @@ class InputMenuApplet : public SystemApplet, public concurrency::OSThread {
     int16_t selMode = 0, selKB = -1, selRow = -1, selCol = -1, selResult = -1, selTarget = -1;
 
     uint32_t autoHideMillis = 0;
+    bool touchLocked = false;
 
     Drivers::LatchingBacklight *backlight = nullptr; // Convenient access to the backlight singleton
     

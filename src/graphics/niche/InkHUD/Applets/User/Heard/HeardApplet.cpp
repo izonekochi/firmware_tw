@@ -58,8 +58,10 @@ void InkHUD::HeardApplet::handleParsed(CardInfo c)
         || previous.distanceMeters != c.distanceMeters // or different position
         || previous.hopsAway != c.hopsAway)            // or different hops away
     {
-        requestAutoshow();
-        requestUpdate();
+        if (settings->userApplets.autoshow[inkhud->getAppletIndex(this)]) {
+            requestAutoshow();
+            requestUpdate();
+        }
     }
 }
 
