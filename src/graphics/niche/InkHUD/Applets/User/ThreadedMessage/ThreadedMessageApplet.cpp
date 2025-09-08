@@ -292,7 +292,8 @@ ProcessMessage InkHUD::ThreadedMessageApplet::handleReceived(const meshtastic_Me
         requestAutoshow();
 
     // Redraw the applet, perhaps.
-    requestUpdate(); // Want to update display, if applet is foreground
+    if (isForeground())
+        requestUpdate(); // Want to update display, if applet is foreground
 
     // Tell Module API to continue informing other firmware components about this message
     // We're not the only component which is interested in new text messages

@@ -40,6 +40,7 @@ class InputMenuApplet : public SystemApplet, public concurrency::OSThread {
 
     uint32_t autoHideMillis = 0;
     uint32_t comboStartMillis = 0;
+    uint8_t comboKeyCode = 0;
     uint8_t comboPressCount = 0;
     bool touchLocked = false;
 

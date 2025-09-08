@@ -28,7 +28,7 @@ void InkHUD::HeardApplet::handleParsed(CardInfo c)
     if (beginCard > 0) {
         populateFromNodeDB();
         if (isForeground())
-            requestUpdate();
+            requestUpdate(NicheGraphics::Drivers::EInk::FAST);
     }
     lastStrength[c.nodeNum] = c.signal;
     LOG_INFO("HeartApplet: heard node !%x, signal=%d", c.nodeNum, static_cast<int>(c.signal));

@@ -268,25 +268,33 @@ int32_t InkHUD::InputMenuApplet::runOnce()
         if (comboPressCount > 0) {
             if (millis() - comboStartMillis > comboPressCount * 300) {
                 comboPressCount = 0;
-                handleBackgroundVKey(0xE7);
+                handleBackgroundVKey(comboKeyCode);
             }
         }
         while (Serial2.available()) {
             const uint8_t code = Serial2.read();
-            if (code == 0xE7) {
+            if (code == 0xE7 || code == 0xE9) {
                 const auto now = millis();
                 if (comboPressCount == 0) {
                     comboStartMillis = now;
+                    comboKeyCode = code;
                     comboPressCount = 1;
                 }
-                else if (now - comboStartMillis <= comboPressCount * 300) {
+                else if (code == comboKeyCode && now - comboStartMillis <= comboPressCount * 300) {
                     comboPressCount++;
                     if (comboPressCount >= 3) {
-                        touchLocked = !touchLocked;
+                        if (comboKeyCode == 0xE7) {
+                            touchLocked = !touchLocked;
+                        }
+                        else if (!touchLocked && comboKeyCode == 0xE9) {
+                            inkhud->openMenu();
+                        }
                         comboPressCount = 0;
                     }
                 }
                 else {
+                    for (int i = 0; i < comboPressCount; i++)
+                        handleBackgroundVKey(comboKeyCode);
                     handleBackgroundVKey(code);
                     comboPressCount = 0;
                 }
