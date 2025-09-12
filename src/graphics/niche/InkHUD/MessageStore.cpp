@@ -133,6 +133,7 @@ void InkHUD::MessageStore::loadFromFlash()
                     break;
             }
 
+            m.id = -1;
             // Store in RAM
             messages.push_back(m);
 

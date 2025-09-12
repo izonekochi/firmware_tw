@@ -43,14 +43,24 @@ class InputMenuApplet : public SystemApplet, public concurrency::OSThread {
     uint8_t comboKeyCode = 0;
     uint8_t comboPressCount = 0;
     bool touchLocked = false;
+#if defined(MOD_UART_T_KEYBOARD)
+    bool keyboardCIM = false;
+    uint8_t currentKBBL = 255;
+#endif //defined(MOD_UART_T_KEYBOARD)
 
     Drivers::LatchingBacklight *backlight = nullptr; // Convenient access to the backlight singleton
     
     int32_t runOnce() override;
 
     Controllable* getActiveControllable();
+
+#if defined(MOD_UART_KEYBOARD_12KEY)
     void handleMenuVKey(const uint8_t code);
     void handleBackgroundVKey(const uint8_t code);
+#elif defined(MOD_UART_T_KEYBOARD)
+    void handleMenuTKey(const uint8_t modCode, const uint8_t keyCode);
+    void handleBackgroundTKey(const uint8_t modCode, const uint8_t keyCode);
+#endif //defined(MOD_UART_T_KEYBOARD)
 
     void handleKeyboardPress();
 

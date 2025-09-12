@@ -24,6 +24,7 @@ class MessageStore
   public:
     // A stored message
     struct Message {
+        uint32_t id;
         uint32_t timestamp; // Epoch seconds
         NodeNum sender = 0;
         uint8_t channelIndex;

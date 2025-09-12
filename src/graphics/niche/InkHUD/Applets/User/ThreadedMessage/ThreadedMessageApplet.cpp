@@ -242,31 +242,54 @@ ProcessMessage InkHUD::ThreadedMessageApplet::handleReceived(const meshtastic_Me
         if (mp.to != NODENUM_BROADCAST)
             return ProcessMessage::CONTINUE;
 
-        // Extract info into our slimmed-down "StoredMessage" type
-        MessageStore::Message newMessage;
-        newMessage.timestamp = getValidTime(RTCQuality::RTCQualityDevice, true); // Current RTC time
-        newMessage.sender = mp.from;
-        newMessage.channelIndex = mp.channel;
-        newMessage.text = std::string((const char *)mp.decoded.payload.bytes, mp.decoded.payload.size);// + "\nhop:" + std::to_string(mp.hop_limit) + "/" + std::to_string(mp.hop_start) + " " + std::to_string((int)mp.rx_snr) + "." + std::to_string((int)(mp.rx_snr * 10) % 10) + "/" + std::to_string(mp.rx_rssi);
+        if (mp.decoded.emoji && mp.decoded.reply_id) {
+            bool bFound = false;
+            for (size_t i = 0; i < store->messages.size(); i++) {
+                if (store->messages[i].id == mp.decoded.reply_id) {
+                    bFound = true;
+                    store->messages[i].text += std::string("←") + std::string((const char *)mp.decoded.payload.bytes, mp.decoded.payload.size);;
+                    break;
+                }
+            }
+        }
+        else {
+            // Extract info into our slimmed-down "StoredMessage" type
+            MessageStore::Message newMessage;
+            newMessage.id = mp.id;
+            newMessage.timestamp = getValidTime(RTCQuality::RTCQualityDevice, true); // Current RTC time
+            newMessage.sender = mp.from;
+            newMessage.channelIndex = mp.channel;
+            newMessage.text = std::string((const char *)mp.decoded.payload.bytes, mp.decoded.payload.size);
 
-        // Store newest message at front
-        // These records are used when rendering, and also stored in flash at shutdown
-        store->messages.push_front(newMessage);
+            // Store newest message at front
+            // These records are used when rendering, and also stored in flash at shutdown
+            store->messages.push_front(newMessage);
+        }
     }
     else if (mp.decoded.portnum == meshtastic_PortNum_STORE_FORWARD_APP) {
         meshtastic_StoreAndForward sf = meshtastic_StoreAndForward_init_zero;
         if (pb_decode_from_bytes(mp.decoded.payload.bytes, mp.decoded.payload.size, &meshtastic_StoreAndForward_msg, &sf)) {
             if (sf.which_variant == meshtastic_StoreAndForward_text_tag && sf.rr == meshtastic_StoreAndForward_RequestResponse_ROUTER_TEXT_BROADCAST) {
-                // Extract info into our slimmed-down "StoredMessage" type
-                MessageStore::Message newMessage;
-                newMessage.timestamp = mp.rx_time; // Current RTC time
-                newMessage.sender = mp.from;
-                newMessage.channelIndex = mp.channel;
-                newMessage.text = std::string((const char *)sf.variant.text.bytes, sf.variant.text.size) + std::string("✉");
+                bool bFound = false;
+                for (size_t i = 0; i < store->messages.size(); i++) {
+                    if (store->messages[i].id == mp.id) {
+                        bFound = true;
+                        store->messages[i].text += std::string("✉");
+                        break;
+                    }
+                }
+                if (!bFound) {
+                    // Extract info into our slimmed-down "StoredMessage" type
+                    MessageStore::Message newMessage;
+                    newMessage.timestamp = mp.rx_time; // Current RTC time
+                    newMessage.sender = mp.from;
+                    newMessage.channelIndex = mp.channel;
+                    newMessage.text = std::string((const char *)sf.variant.text.bytes, sf.variant.text.size) + std::string("✉");
 
-                // Store newest message at front
-                // These records are used when rendering, and also stored in flash at shutdown
-                store->messages.push_front(newMessage);
+                    // Store newest message at front
+                    // These records are used when rendering, and also stored in flash at shutdown
+                    store->messages.push_front(newMessage);
+                }
             }
         }
     }
@@ -293,7 +316,7 @@ ProcessMessage InkHUD::ThreadedMessageApplet::handleReceived(const meshtastic_Me
 
     // Redraw the applet, perhaps.
     if (isForeground())
-        requestUpdate(); // Want to update display, if applet is foreground
+        requestUpdate(NicheGraphics::Drivers::EInk::FAST); // Want to update display, if applet is foreground
 
     // Tell Module API to continue informing other firmware components about this message
     // We're not the only component which is interested in new text messages
