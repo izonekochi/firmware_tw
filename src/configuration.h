@@ -117,6 +117,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define SX126X_MAX_POWER 22
 #endif
 
+#ifdef HELTEC_V4
+// Power Amps are often non-linear, so we can use an array of values for the power curve
+#define NUM_PA_POINTS 22
+#define TX_GAIN_LORA 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 10, 10, 9, 9, 8, 7
+#endif
+
 // Default system gain to 0 if not defined
 #ifndef TX_GAIN_LORA
 #define TX_GAIN_LORA 0
@@ -260,6 +266,13 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #if defined(VEXT_ENABLE) && !defined(VEXT_ON_VALUE)
 // Older variant.h files might not be defining this value, so stay with the old default
 #define VEXT_ON_VALUE LOW
+#endif
+
+// -----------------------------------------------------------------------------
+// Rotary encoder
+// -----------------------------------------------------------------------------
+#ifndef ROTARY_DELAY
+#define ROTARY_DELAY 5
 #endif
 
 // -----------------------------------------------------------------------------
@@ -431,7 +444,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define MESHTASTIC_EXCLUDE_SERIAL 1
 #define MESHTASTIC_EXCLUDE_POWERSTRESS 1
 #define MESHTASTIC_EXCLUDE_ADMIN 1
-#define MESHTASTIC_EXCLUDE_AMBIENTLIGHTING 1
 #endif
 
 // // Turn off wifi even if HW supports wifi (webserver relies on wifi and is also disabled)
