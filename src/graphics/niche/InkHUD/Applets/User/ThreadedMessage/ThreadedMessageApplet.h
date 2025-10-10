@@ -34,19 +34,19 @@ namespace NicheGraphics::InkHUD
 
 class Applet;
 
-#if defined(MOD_MESHPOCKET)
+#if defined(MOD_INKHUD_TUNES)
 #if defined(MOD_INPUT_MENU)
 class ThreadedMessageApplet : public Applet, virtual public Controllable, public MeshModule
 #else //!defined(MOD_INPUT_MENU)
 class ThreadedMessageApplet : public Applet, public MeshModule
 #endif //defined(MOD_INPUT_MENU)
-#else //!defined(MOD_MESHPOCKET)
+#else //!defined(MOD_INKHUD_TUNES)
 #if defined(MOD_INPUT_MENU)
 class ThreadedMessageApplet : public Applet, virtual public Controllable, public SinglePortModule
 #else //!defined(MOD_INPUT_MENU)
 class ThreadedMessageApplet : public Applet, public SinglePortModule
 #endif //defined(MOD_INPUT_MENU)
-#endif //defined(MOD_MESHPOCKET)
+#endif //defined(MOD_INKHUD_TUNES)
 {
   public:
     explicit ThreadedMessageApplet(uint8_t channelIndex);
@@ -64,9 +64,9 @@ class ThreadedMessageApplet : public Applet, public SinglePortModule
 
     bool approveNotification(Notification &n) override; // Which notifications to suppress
 
-#if defined(MOD_MESHPOCKET)
+#if defined(MOD_INKHUD_TUNES)
     bool wantPacket(const meshtastic_MeshPacket *p) override;
-#endif //defined(MOD_MESHPOCKET)
+#endif //defined(MOD_INKHUD_TUNES)
 
 #if defined(MOD_INPUT_MENU)
     uint8_t getChannelIndex() const { return channelIndex; }

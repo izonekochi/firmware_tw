@@ -13,7 +13,7 @@ using namespace NicheGraphics;
 constexpr uint8_t MAX_MESSAGES_SAVED = 10;
 constexpr uint32_t MAX_MESSAGE_SIZE = 250;
 
-#if defined(MOD_MESHPOCKET)
+#if defined(MOD_INKHUD_TUNES)
 
 #include "mesh/generated/meshtastic/storeforward.pb.h"
 
@@ -24,7 +24,7 @@ InkHUD::ThreadedMessageApplet::ThreadedMessageApplet(uint8_t channelIndex)
 InkHUD::ThreadedMessageApplet::ThreadedMessageApplet(uint8_t channelIndex)
     : MeshModule("ThreadedMessageApplet"), channelIndex(channelIndex)
 #endif //defined(MOD_INPUT_MENU)
-#else //!defined(MOD_MESHPOCKET)
+#else //!defined(MOD_INKHUD_TUNES)
 #if defined(MOD_INPUT_MENU)
 InkHUD::ThreadedMessageApplet::ThreadedMessageApplet(uint8_t channelIndex)
     : SinglePortModule("ThreadedMessageApplet", meshtastic_PortNum_TEXT_MESSAGE_APP), Controllable(), channelIndex(channelIndex)
@@ -32,7 +32,7 @@ InkHUD::ThreadedMessageApplet::ThreadedMessageApplet(uint8_t channelIndex)
 InkHUD::ThreadedMessageApplet::ThreadedMessageApplet(uint8_t channelIndex)
     : SinglePortModule("ThreadedMessageApplet", meshtastic_PortNum_TEXT_MESSAGE_APP), channelIndex(channelIndex)
 #endif //defined(MOD_INPUT_MENU)
-#endif //defined(MOD_MESHPOCKET)
+#endif //defined(MOD_INKHUD_TUNES)
 {
 #if defined(MOD_INPUT_MENU)
     Controllable::registerControllable(this, Controllable::Types::ThreadedMessage);
@@ -236,7 +236,7 @@ ProcessMessage InkHUD::ThreadedMessageApplet::handleReceived(const meshtastic_Me
     if (mp.channel != this->channelIndex)
         return ProcessMessage::CONTINUE;
 
-#if defined(MOD_MESHPOCKET)
+#if defined(MOD_INKHUD_TUNES)
     if (mp.decoded.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP) {
         // Abort if message was a DM
         if (mp.to != NODENUM_BROADCAST)
@@ -293,7 +293,7 @@ ProcessMessage InkHUD::ThreadedMessageApplet::handleReceived(const meshtastic_Me
             }
         }
     }
-#else //!defined(MOD_MESHPOCKET)
+#else //!defined(MOD_INKHUD_TUNES)
     // Abort if message was a DM
     if (mp.to != NODENUM_BROADCAST)
         return ProcessMessage::CONTINUE;
@@ -308,7 +308,7 @@ ProcessMessage InkHUD::ThreadedMessageApplet::handleReceived(const meshtastic_Me
     // Store newest message at front
     // These records are used when rendering, and also stored in flash at shutdown
     store->messages.push_front(newMessage);
-#endif //defined(MOD_MESHPOCKET)
+#endif //defined(MOD_INKHUD_TUNES)
 
     // If this was an incoming message, suggest that our applet becomes foreground, if permitted
     if (getFrom(&mp) != nodeDB->getNodeNum())
@@ -334,7 +334,7 @@ bool InkHUD::ThreadedMessageApplet::approveNotification(Notification &n)
         return true;
 }
 
-#if defined(MOD_MESHPOCKET)
+#if defined(MOD_INKHUD_TUNES)
 bool InkHUD::ThreadedMessageApplet::wantPacket(const meshtastic_MeshPacket *p)
 {
     if (p->decoded.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP)
@@ -343,7 +343,7 @@ bool InkHUD::ThreadedMessageApplet::wantPacket(const meshtastic_MeshPacket *p)
         return true;
     return false;
 }
-#endif //defined(MOD_MESHPOCKET)
+#endif //defined(MOD_INKHUD_TUNES)
 
 #if defined(MOD_INPUT_MENU)
 bool InkHUD::ThreadedMessageApplet::handleUp()
