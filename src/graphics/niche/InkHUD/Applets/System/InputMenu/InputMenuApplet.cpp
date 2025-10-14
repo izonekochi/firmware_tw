@@ -811,7 +811,7 @@ void InkHUD::InputMenuApplet::handleMenuVKey(const uint8_t code) {
                 selTarget++;
         }
         break;
-    case TOUCH_KEY_RIGHT: // right
+    case KEY_TOUCH_RIGHT: // right
         LOG_INFO("Key press [right]");
         if (selMode == 0) { // select KB
             if (selKB == (int16_t)keyboards.size() - 1)
@@ -892,7 +892,7 @@ void InkHUD::InputMenuApplet::handleBackgroundVKey(const uint8_t code) {
                 app->handleDown();
         }
         break;
-    case TOUCH_KEY_RIGHT: // right
+    case KEY_TOUCH_RIGHT: // right
         LOG_INFO("Key press [right]");
         if (!touchLocked) {
             if (settings->userTiles.count > 1) {
