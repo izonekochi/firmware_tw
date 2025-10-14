@@ -15,6 +15,24 @@
 #include "graphics/niche/Fonts/cubicFont.h"
 #endif //defined(MOD_CJK_ENABLED)
 
+#if defined(MOD_UART_KEYBOARD_12KEY)
+#if defined(MOD_UART_KEYBOARD_12KEY_UPSIDEDOWN)
+#define KEY_TOUCH_BACK  0xEC
+#define KEY_TOUCH_UP    0xEB
+#define KEY_TOUCH_ENTER 0xEA
+#define KEY_TOUCH_LEFT  0xE9
+#define KEY_TOUCH_DOWN  0xE8
+#define KEY_TOUCH_RIGHT 0xE7
+#else //!defined(MOD_UART_KEYBOARD_12KEY_UPSIDEDOWN)
+#define KEY_TOUCH_BACK  0xE7
+#define KEY_TOUCH_UP    0xE8
+#define KEY_TOUCH_ENTER 0xE9
+#define KEY_TOUCH_LEFT  0xEA
+#define KEY_TOUCH_DOWN  0xEB
+#define KEY_TOUCH_RIGHT 0xEC
+#endif //defined(MOD_UART_KEYBOARD_12KEY_UPSIDEDOWN)
+#endif //defined(MOD_UART_KEYBOARD_12KEY)
+
 using namespace NicheGraphics;
 
 static constexpr uint8_t INPUT_TIMEOUT_SEC = 15; // How many seconds before menu auto-closes
@@ -527,10 +545,12 @@ int32_t InkHUD::InputMenuApplet::runOnce()
         }
     }
     else {
+#if defined(MOD_UART_KEYBOARD_12KEY_AUTOLOCK)
         if (millis() > autoHideMillis)
             touchLocked = true;
+#endif //defined(MOD_UART_KEYBOARD_12KEY_AUTOLOCK)
         if (comboPressCount > 0) {
-            if (millis() - comboStartMillis > comboPressCount * 300) {
+            if (millis() - comboStartMillis > comboPressCount * 350) {
                 comboPressCount = 0;
                 handleBackgroundVKey(comboKeyCode);
             }
@@ -538,21 +558,24 @@ int32_t InkHUD::InputMenuApplet::runOnce()
         while (Serial2.available()) {
             autoHideMillis = millis() + LOCK_TIMEOUT_SEC * 1000UL;
             const uint8_t code = Serial2.read();
-            if (code == 0xE7 || code == 0xE9) {
+            if (code == KEY_TOUCH_BACK || code == KEY_TOUCH_ENTER) {
                 const auto now = millis();
                 if (comboPressCount == 0) {
                     comboStartMillis = now;
                     comboKeyCode = code;
                     comboPressCount = 1;
                 }
-                else if (code == comboKeyCode && now - comboStartMillis <= comboPressCount * 300) {
+                else if (code == comboKeyCode && now - comboStartMillis <= comboPressCount * 350) {
                     comboPressCount++;
-                    if (comboPressCount >= 3) {
-                        if (comboKeyCode == 0xE7) {
-                            touchLocked = !touchLocked;
+                    if (comboPressCount >= 2) {
+                        if (!touchLocked && comboKeyCode == KEY_TOUCH_ENTER) {
+                            inkhud->longpress();
                         }
-                        else if (!touchLocked && comboKeyCode == 0xE9) {
-                            inkhud->openMenu();
+                        comboPressCount = 0;
+                    }
+                    if (comboPressCount >= 3) {
+                        if (comboKeyCode == KEY_TOUCH_BACK) {
+                            touchLocked = !touchLocked;
                         }
                         comboPressCount = 0;
                     }
@@ -642,7 +665,7 @@ InkHUD::Controllable* InkHUD::InputMenuApplet::getActiveControllable() {
 #if defined(MOD_UART_KEYBOARD_12KEY)
 void InkHUD::InputMenuApplet::handleMenuVKey(const uint8_t code) {
     switch (code) {
-    case 0xE7: // back
+    case KEY_TOUCH_BACK: // back
         LOG_INFO("Key press [back]");
         if (selMode == 0) { // select KB
             sendToBackground();
@@ -660,7 +683,7 @@ void InkHUD::InputMenuApplet::handleMenuVKey(const uint8_t code) {
             selMode = 2;
         }
         break;
-    case 0xE8: // up
+    case KEY_TOUCH_UP: // up
         LOG_INFO("Key press [up]");
         if (selMode == 0) { // select KB
             sendToBackground();
@@ -690,7 +713,7 @@ void InkHUD::InputMenuApplet::handleMenuVKey(const uint8_t code) {
                 selTarget--;
         }
         break;
-    case 0xE9: // enter
+    case KEY_TOUCH_ENTER: // enter
         LOG_INFO("Key press [enter]");
         if (selMode == 0) { // select KB
             if (selKB >= 0 && selKB < (int16_t)keyboards.size()) {
@@ -718,7 +741,7 @@ void InkHUD::InputMenuApplet::handleMenuVKey(const uint8_t code) {
                 handleKeyboardPress();
         }
         break;
-    case 0xEA: // left
+    case KEY_TOUCH_LEFT: // left
         LOG_INFO("Key press [left]");
         if (selMode == 0) { // select KB
             if (selKB <= 0)
@@ -751,7 +774,7 @@ void InkHUD::InputMenuApplet::handleMenuVKey(const uint8_t code) {
                 selTarget--;
         }
         break;
-    case 0xEB: // down
+    case KEY_TOUCH_DOWN: // down
         LOG_INFO("Key press [down]");
         if (selMode == 0) { // select KB
             if (selKB >= 0 && selKB < (int16_t)keyboards.size()) {
@@ -788,7 +811,7 @@ void InkHUD::InputMenuApplet::handleMenuVKey(const uint8_t code) {
                 selTarget++;
         }
         break;
-    case 0xEC: // right
+    case TOUCH_KEY_RIGHT: // right
         LOG_INFO("Key press [right]");
         if (selMode == 0) { // select KB
             if (selKB == (int16_t)keyboards.size() - 1)
@@ -827,7 +850,7 @@ void InkHUD::InputMenuApplet::handleMenuVKey(const uint8_t code) {
 
 void InkHUD::InputMenuApplet::handleBackgroundVKey(const uint8_t code) {
     switch (code) {
-    case 0xE7: // back
+    case KEY_TOUCH_BACK: // back
         LOG_INFO("Key press [back]");
         if (!touchLocked) {
             auto app = getActiveControllable();
@@ -835,7 +858,7 @@ void InkHUD::InputMenuApplet::handleBackgroundVKey(const uint8_t code) {
                 app->handleBack();
         }
         break;
-    case 0xE8: // up
+    case KEY_TOUCH_UP: // up
         LOG_INFO("Key press [up]");
         if (!touchLocked) {
             auto app = getActiveControllable();
@@ -843,20 +866,13 @@ void InkHUD::InputMenuApplet::handleBackgroundVKey(const uint8_t code) {
                 app->handleUp();
         }
         break;
-    case 0xE9: // enter
+    case KEY_TOUCH_ENTER: // enter
         LOG_INFO("Key press [enter]");
         if (!touchLocked) {
-            auto app = getActiveControllable();
-            if (app) {
-                if (!app->handleEnter())
-                    inkhud->nextApplet();
-            }
-            else {
-                inkhud->nextApplet();
-            }
+            inkhud->shortpress();
         }
         break;
-    case 0xEA: // left
+    case KEY_TOUCH_LEFT: // left
         LOG_INFO("Key press [left]");
         if (!touchLocked) {
             if (settings->userTiles.count > 1) {
@@ -868,7 +884,7 @@ void InkHUD::InputMenuApplet::handleBackgroundVKey(const uint8_t code) {
             }
         }
         break;
-    case 0xEB: // down
+    case KEY_TOUCH_DOWN: // down
         LOG_INFO("Key press [down]");
         if (!touchLocked) {
             auto app = getActiveControllable();
@@ -876,7 +892,7 @@ void InkHUD::InputMenuApplet::handleBackgroundVKey(const uint8_t code) {
                 app->handleDown();
         }
         break;
-    case 0xEC: // right
+    case TOUCH_KEY_RIGHT: // right
         LOG_INFO("Key press [right]");
         if (!touchLocked) {
             if (settings->userTiles.count > 1) {
