@@ -1630,7 +1630,8 @@ void InkHUD::InputMenuApplet::handleKeyboardPress()
     }
     else {
         if (selKB == 0) {
-            if (selRow == 0) {
+            const auto cmdCode = std::get<1>(std::get<1>(keyboards[selKB])[selRow][selCol]);
+            if (cmdCode == 0) {
                 if (ctrlPtr0 && ctrlType == Controllable::Types::ThreadedMessage) {
                     auto ctrlPtr = (ThreadedMessageApplet*)ctrlPtr0;
                     std::string message = currentInput;
@@ -1648,111 +1649,106 @@ void InkHUD::InputMenuApplet::handleKeyboardPress()
                         sendToBackground();
                 }
             }
-            else if (selRow == 1) {
-                if (selCol == 0) {
-                    for (size_t pos = 0; pos < currentInput.length(); ) {
-                        size_t numChars = getUTF8Chars((uint8_t*)currentInput.c_str() + pos);
-                        if (numChars < 1)
-                            break;
-                        if (pos + numChars == currentInput.length())
-                            currentInput = currentInput.substr(0, pos);
-                        pos += numChars;
+            else if (cmdCode == 1) {
+                for (size_t pos = 0; pos < currentInput.length(); ) {
+                    size_t numChars = getUTF8Chars((uint8_t*)currentInput.c_str() + pos);
+                    if (numChars < 1)
+                        break;
+                    if (pos + numChars == currentInput.length())
+                        currentInput = currentInput.substr(0, pos);
+                    pos += numChars;
+                }
+                selMode = 1;
+#if !defined(MOD_UART_KEYBOARD_12KEY)
+                selCol = -1;
+                selRow = -1;
+#endif //defined(MOD_UART_KEYBOARD_12KEY)
+            }
+            else if (cmdCode == 2) {
+                currentInput.clear();
+                selMode = 1;
+#if !defined(MOD_UART_KEYBOARD_12KEY)
+                selCol = -1;
+                selRow = -1;
+#endif //defined(MOD_UART_KEYBOARD_12KEY)
+            }
+            else if (cmdCode == 3 || cmdCode == 4) {
+                Controllable* ctrlPtr = nullptr;
+                if (ctrlPtr0) {
+                    if (ctrlType == Controllable::Types::ThreadedMessage) {
+                        auto ctrlPtr1 = (ThreadedMessageApplet*)ctrlPtr0;
+                        ctrlPtr = (Controllable*)ctrlPtr1;
                     }
-                    selMode = 1;
-#if !defined(MOD_UART_KEYBOARD_12KEY)
-                    selCol = -1;
-                    selRow = -1;
-#endif //defined(MOD_UART_KEYBOARD_12KEY)
-                }
-                else if (selCol == 1) {
-                    currentInput.clear();
-                    selMode = 1;
-#if !defined(MOD_UART_KEYBOARD_12KEY)
-                    selCol = -1;
-                    selRow = -1;
-#endif //defined(MOD_UART_KEYBOARD_12KEY)
-                }
-                else {
-                    Controllable* ctrlPtr = nullptr;
-                    if (ctrlPtr0) {
-                        if (ctrlType == Controllable::Types::ThreadedMessage) {
-                            auto ctrlPtr1 = (ThreadedMessageApplet*)ctrlPtr0;
-                            ctrlPtr = (Controllable*)ctrlPtr1;
+                    else if (ctrlType == Controllable::Types::Heard) {
+                        auto ctrlPtr1 = (HeardApplet*)ctrlPtr0;
+                        ctrlPtr = (Controllable*)ctrlPtr1;
+                    }
+                    if (ctrlPtr) {
+                        if (cmdCode == 3) {
+                            ctrlPtr->handleUp();
                         }
-                        else if (ctrlType == Controllable::Types::Heard) {
-                            auto ctrlPtr1 = (HeardApplet*)ctrlPtr0;
-                            ctrlPtr = (Controllable*)ctrlPtr1;
+                        else if (cmdCode == 4) {
+                            ctrlPtr->handleDown();
                         }
-                        if (ctrlPtr) {
-                            if (selCol == 2) {
-                                ctrlPtr->handleUp();
-                            }
-                            else if (selCol == 3) {
-                                ctrlPtr->handleDown();
-                            }
-                            if (bBorrowed)
-                                sendToBackground();
-                        }
+                        if (bBorrowed)
+                            sendToBackground();
                     }
                 }
             }
-            else if (selRow == 2) {
+            else if (cmdCode == 5) {
                 sendTargets.clear();
-                if (selCol == 0) {
-                    for (uint8_t i = 0; i < MAX_NUM_CHANNELS; i++) {
-                        meshtastic_Channel &channel = channels.getByIndex(i);
-                        if (!channel.has_settings || channel.role == meshtastic_Channel_Role_DISABLED)
-                            continue;
-                        sendTargets.emplace_back(std::string("CH") + std::to_string((int)channel.index) + ":" + channel.settings.name, channel.index);
-                    }
-                    selMode = 0x10;
-#if defined(MOD_UART_KEYBOARD_12KEY)
-                    selTarget = 0;
-#else //!defined(MOD_UART_KEYBOARD_12KEY)
-                    selTarget = -1;
-#endif //defined(MOD_UART_KEYBOARD_12KEY)
+                for (uint8_t i = 0; i < MAX_NUM_CHANNELS; i++) {
+                    meshtastic_Channel &channel = channels.getByIndex(i);
+                    if (!channel.has_settings || channel.role == meshtastic_Channel_Role_DISABLED)
+                        continue;
+                    sendTargets.emplace_back(std::string("CH") + std::to_string((int)channel.index) + ":" + channel.settings.name, channel.index);
                 }
-                else if (selCol == 1) {
-                    uint32_t nodeCount = nodeDB->getNumMeshNodes();
-                    for (uint32_t i = 0; i < nodeCount; i++) {
-                        meshtastic_NodeInfoLite *node = nodeDB->getMeshNodeByIndex(i);
-                        if (!node->is_favorite)
-                            continue;
-                        if (node->has_user)
-                            sendTargets.emplace_back(std::string(node->user.long_name), node->num);
-                        else
-                            sendTargets.emplace_back(hexifyNodeNum(node->num), node->num);
-                    }
-                    selMode = 0x11;
+                selMode = 0x10;
 #if defined(MOD_UART_KEYBOARD_12KEY)
-                    selTarget = 0;
+                selTarget = 0;
 #else //!defined(MOD_UART_KEYBOARD_12KEY)
-                    selTarget = -1;
+                selTarget = -1;
 #endif //defined(MOD_UART_KEYBOARD_12KEY)
-                }
             }
-            else if (selRow == 3) {
-                if (selCol == 0) {
+            else if (cmdCode == 6) {
+                sendTargets.clear();
+                uint32_t nodeCount = nodeDB->getNumMeshNodes();
+                for (uint32_t i = 0; i < nodeCount; i++) {
+                    meshtastic_NodeInfoLite *node = nodeDB->getMeshNodeByIndex(i);
+                    if (!node->is_favorite)
+                        continue;
+                    if (node->has_user)
+                        sendTargets.emplace_back(std::string(node->user.long_name), node->num);
+                    else
+                        sendTargets.emplace_back(hexifyNodeNum(node->num), node->num);
+                }
+                selMode = 0x11;
+#if defined(MOD_UART_KEYBOARD_12KEY)
+                selTarget = 0;
+#else //!defined(MOD_UART_KEYBOARD_12KEY)
+                selTarget = -1;
+#endif //defined(MOD_UART_KEYBOARD_12KEY)
+            }
+            else if (cmdCode == 7) {
+                settings->userTiles.count++;
+                if (settings->userTiles.count == 3)
                     settings->userTiles.count++;
-                    if (settings->userTiles.count == 3)
-                        settings->userTiles.count++;
-                    if (settings->userTiles.count > settings->userTiles.maxCount)
-                        settings->userTiles.count = 1;
-                    inkhud->updateLayout();
-                }
-                else if (selCol == 1) {
-                    inkhud->nextTile();
-                }
-                else if (selCol == 2) {
-                    LOG_INFO("Shutting down from input menu");
-                    shutdownAtMsec = millis();
-                }
-                else if (selCol == 3) {
-                    MenuApplet *menu = (MenuApplet *)inkhud->getSystemApplet("Menu");
-                    Tile* t = getTile();
-                    sendToBackground();
-                    menu->show(t);
-                }
+                if (settings->userTiles.count > settings->userTiles.maxCount)
+                    settings->userTiles.count = 1;
+                inkhud->updateLayout();
+            }
+            else if (cmdCode == 8) {
+                inkhud->nextTile();
+            }
+            else if (cmdCode == 9) {
+                LOG_INFO("Shutting down from input menu");
+                shutdownAtMsec = millis();
+            }
+            else if (cmdCode == 10) {
+                MenuApplet *menu = (MenuApplet *)inkhud->getSystemApplet("Menu");
+                Tile* t = getTile();
+                sendToBackground();
+                menu->show(t);
             }
         }
         else if (selKB == 1) {
