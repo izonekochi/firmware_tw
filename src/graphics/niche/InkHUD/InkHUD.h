@@ -55,20 +55,29 @@ class InkHUD
 
     void shortpress();
     void longpress();
+    void exitShort();
+    void exitLong();
+    void navUp();
+    void navDown();
+    void navLeft();
+    void navRight();
 
     // Trigger UI changes
     // - called by various InkHUD components
     // - suitable(?) for use by aux button, connected in variant nicheGraphics.h
 
     void nextApplet();
-#if defined(MOD_INPUT_MENU)
     void prevApplet();
+#if defined(MOD_INPUT_MENU)
     Tile* getFocusedTile();
     uint8_t getAppletIndex(Applet* app);
 #endif //defined(MOD_INPUT_MENU)
     void openMenu();
+    void openAlignStick();
     void nextTile();
+    void prevTile();
     void rotate();
+    void rotateJoystick(uint8_t angle = 1); // rotate 90 deg by default
     void toggleBatteryIcon();
 
     // Updating the display

@@ -2,6 +2,7 @@
 
 #include "./WindowManager.h"
 
+#include "./Applets/System/AlignStick/AlignStickApplet.h"
 #include "./Applets/System/BatteryIcon/BatteryIconApplet.h"
 #include "./Applets/System/Logo/LogoApplet.h"
 #include "./Applets/System/Menu/MenuApplet.h"
@@ -124,6 +125,82 @@ void InkHUD::WindowManager::nextTile()
         userTiles.at(settings->userTiles.focused)->requestHighlight();
 }
 
+// Focus on a different tile but decrement index
+void InkHUD::WindowManager::prevTile()
+{
+    // Close the menu applet if open
+    // We don't *really* want to do this, but it simplifies handling *a lot*
+    MenuApplet *menu = (MenuApplet *)inkhud->getSystemApplet("Menu");
+    bool menuWasOpen = false;
+    if (menu->isForeground()) {
+        menu->sendToBackground();
+        menuWasOpen = true;
+    }
+
+    // Swap to next tile
+    if (settings->userTiles.focused == 0)
+        settings->userTiles.focused = settings->userTiles.count - 1;
+    else
+        settings->userTiles.focused--;
+
+    // Make sure that we don't get stuck on the placeholder tile
+    refocusTile();
+
+    if (menuWasOpen)
+        menu->show(userTiles.at(settings->userTiles.focused));
+#if defined(MOD_INPUT_MENU)
+    else if (inputMenuWasOpen) {
+        if (settings->userTiles.count == 1 && Controllable::checkControllable(userTiles.at(settings->userTiles.focused)->getAssignedApplet()) != Controllable::Types::Uncontrollable) {
+            InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
+            inputMenu->show(userTiles.at(settings->userTiles.focused), nullptr);
+        }
+        else if (settings->userTiles.count == 2 && Controllable::checkControllable(userTiles.at(1 - settings->userTiles.focused)->getAssignedApplet()) != Controllable::Types::Uncontrollable) {
+            InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
+            inputMenu->show(userTiles.at(settings->userTiles.focused), userTiles.at(1 - settings->userTiles.focused));
+        }
+    }
+#endif //defined(MOD_INPUT_MENU)
+
+    // Ask the tile to draw an indicator showing which tile is now focused
+    // Requests a render
+    // We only draw this indicator if the device uses an aux button to switch tiles.
+    // Assume aux button is used to switch tiles if the "next tile" menu item is hidden
+    if (!settings->optionalMenuItems.nextTile)
+        userTiles.at(settings->userTiles.focused)->requestHighlight();
+}
+
+// Focus on a different tile but decrement index
+void InkHUD::WindowManager::prevTile()
+{
+    // Close the menu applet if open
+    // We don't *really* want to do this, but it simplifies handling *a lot*
+    MenuApplet *menu = (MenuApplet *)inkhud->getSystemApplet("Menu");
+    bool menuWasOpen = false;
+    if (menu->isForeground()) {
+        menu->sendToBackground();
+        menuWasOpen = true;
+    }
+
+    // Swap to next tile
+    if (settings->userTiles.focused == 0)
+        settings->userTiles.focused = settings->userTiles.count - 1;
+    else
+        settings->userTiles.focused--;
+
+    // Make sure that we don't get stuck on the placeholder tile
+    refocusTile();
+
+    if (menuWasOpen)
+        menu->show(userTiles.at(settings->userTiles.focused));
+
+    // Ask the tile to draw an indicator showing which tile is now focused
+    // Requests a render
+    // We only draw this indicator if the device uses an aux button to switch tiles.
+    // Assume aux button is used to switch tiles if the "next tile" menu item is hidden
+    if (!settings->optionalMenuItems.nextTile)
+        userTiles.at(settings->userTiles.focused)->requestHighlight();
+}
+
 // Show the menu (on the the focused tile)
 // The applet previously displayed there will be restored once the menu closes
 void InkHUD::WindowManager::openMenu()
@@ -145,6 +222,24 @@ void InkHUD::WindowManager::openMenu()
     MenuApplet *menu = (MenuApplet *)inkhud->getSystemApplet("Menu");
     menu->show(userTiles.at(settings->userTiles.focused));
 #endif //defined(MOD_INPUT_MENU)
+}
+
+// Bring the AlignStick applet to the foreground
+void InkHUD::WindowManager::openAlignStick()
+{
+    if (settings->joystick.enabled) {
+        AlignStickApplet *alignStick = (AlignStickApplet *)inkhud->getSystemApplet("AlignStick");
+        alignStick->bringToForeground();
+    }
+}
+
+// Bring the AlignStick applet to the foreground
+void InkHUD::WindowManager::openAlignStick()
+{
+    if (settings->joystick.enabled) {
+        AlignStickApplet *alignStick = (AlignStickApplet *)inkhud->getSystemApplet("AlignStick");
+        alignStick->bringToForeground();
+    }
 }
 
 // On the currently focussed tile: cycle to the next available user applet
@@ -196,7 +291,6 @@ void InkHUD::WindowManager::nextApplet()
     inkhud->forceUpdate(EInk::UpdateTypes::FAST); // bringToForeground already requested, but we're manually forcing FAST
 }
 
-#if defined(MOD_INPUT_MENU)
 // On the currently focussed tile: cycle to the previous available user applet
 // Applets available for this must be activated, and not already displayed on another tile
 void InkHUD::WindowManager::prevApplet()
@@ -220,15 +314,19 @@ void InkHUD::WindowManager::prevApplet()
     // Confirm that we did find the applet
     assert(appletIndex != (uint8_t)-1);
 
-    // Iterate forward through the WindowManager::applets, looking for the next valid applet
-    Applet *nextValidApplet = nullptr;
+    // Iterate forward through the WindowManager::applets, looking for the previous valid applet
+    Applet *prevValidApplet = nullptr;
     for (uint8_t i = 1; i < inkhud->userApplets.size(); i++) {
-        uint8_t newAppletIndex = (appletIndex + inkhud->userApplets.size() - i) % inkhud->userApplets.size();
+        uint8_t newAppletIndex = 0;
+        if (i > appletIndex)
+            newAppletIndex = inkhud->userApplets.size() + appletIndex - i;
+        else
+            newAppletIndex = (appletIndex - i);
         Applet *a = inkhud->userApplets.at(newAppletIndex);
 
         // Looking for an applet which is active (enabled by user), but currently in background
         if (a->isActive() && !a->isForeground()) {
-            nextValidApplet = a;
+            prevValidApplet = a;
             settings->userTiles.displayedUserApplet[settings->userTiles.focused] =
                 newAppletIndex; // Remember this setting between boots!
             break;
@@ -236,16 +334,17 @@ void InkHUD::WindowManager::prevApplet()
     }
 
     // Confirm that we found another applet
-    if (!nextValidApplet)
+    if (!prevValidApplet)
         return;
 
     // Hide old applet, show new applet
     t->getAssignedApplet()->sendToBackground();
-    t->assignApplet(nextValidApplet);
-    nextValidApplet->bringToForeground();
+    t->assignApplet(prevValidApplet);
+    prevValidApplet->bringToForeground();
     inkhud->forceUpdate(EInk::UpdateTypes::FAST); // bringToForeground already requested, but we're manually forcing FAST
 }
 
+#if defined(MOD_INPUT_MENU)
 InkHUD::Tile* InkHUD::WindowManager::getFocusedTile()
 {
     return userTiles.at(settings->userTiles.focused);
@@ -453,6 +552,8 @@ void InkHUD::WindowManager::createSystemApplets()
     addSystemApplet("Logo", new LogoApplet, new Tile);
     addSystemApplet("Pairing", new PairingApplet, new Tile);
     addSystemApplet("Tips", new TipsApplet, new Tile);
+    if (settings->joystick.enabled)
+        addSystemApplet("AlignStick", new AlignStickApplet, new Tile);
 
     addSystemApplet("Menu", new MenuApplet, nullptr);
 
@@ -479,6 +580,8 @@ void InkHUD::WindowManager::placeSystemTiles()
     inkhud->getSystemApplet("Logo")->getTile()->setRegion(0, 0, inkhud->width(), inkhud->height());
     inkhud->getSystemApplet("Pairing")->getTile()->setRegion(0, 0, inkhud->width(), inkhud->height());
     inkhud->getSystemApplet("Tips")->getTile()->setRegion(0, 0, inkhud->width(), inkhud->height());
+    if (settings->joystick.enabled)
+        inkhud->getSystemApplet("AlignStick")->getTile()->setRegion(0, 0, inkhud->width(), inkhud->height());
 
     inkhud->getSystemApplet("Notification")->getTile()->setRegion(0, 0, inkhud->width(), 20);
 

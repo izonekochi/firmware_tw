@@ -28,10 +28,12 @@ class WindowManager
     // - call these to make stuff change
 
     void nextTile();
+    void prevTile();
     void openMenu();
+    void openAlignStick();
     void nextApplet();
-#if defined(MOD_INPUT_MENU)
     void prevApplet();
+#if defined(MOD_INPUT_MENU)
     Tile* getFocusedTile();
 #endif //defined(MOD_INPUT_MENU)
     void rotate();
