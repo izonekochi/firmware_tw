@@ -136,6 +136,16 @@ void InkHUD::WindowManager::prevTile()
         menu->sendToBackground();
         menuWasOpen = true;
     }
+#if defined(MOD_INPUT_MENU)
+    bool inputMenuWasOpen = false;
+    if (!menuWasOpen) {
+        InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
+        if (inputMenu->isForeground()) {
+            inputMenu->sendToBackground();
+            inputMenuWasOpen = true;
+        }
+    }
+#endif //defined(MOD_INPUT_MENU)
 
     // Swap to next tile
     if (settings->userTiles.focused == 0)
@@ -169,38 +179,6 @@ void InkHUD::WindowManager::prevTile()
         userTiles.at(settings->userTiles.focused)->requestHighlight();
 }
 
-// Focus on a different tile but decrement index
-void InkHUD::WindowManager::prevTile()
-{
-    // Close the menu applet if open
-    // We don't *really* want to do this, but it simplifies handling *a lot*
-    MenuApplet *menu = (MenuApplet *)inkhud->getSystemApplet("Menu");
-    bool menuWasOpen = false;
-    if (menu->isForeground()) {
-        menu->sendToBackground();
-        menuWasOpen = true;
-    }
-
-    // Swap to next tile
-    if (settings->userTiles.focused == 0)
-        settings->userTiles.focused = settings->userTiles.count - 1;
-    else
-        settings->userTiles.focused--;
-
-    // Make sure that we don't get stuck on the placeholder tile
-    refocusTile();
-
-    if (menuWasOpen)
-        menu->show(userTiles.at(settings->userTiles.focused));
-
-    // Ask the tile to draw an indicator showing which tile is now focused
-    // Requests a render
-    // We only draw this indicator if the device uses an aux button to switch tiles.
-    // Assume aux button is used to switch tiles if the "next tile" menu item is hidden
-    if (!settings->optionalMenuItems.nextTile)
-        userTiles.at(settings->userTiles.focused)->requestHighlight();
-}
-
 // Show the menu (on the the focused tile)
 // The applet previously displayed there will be restored once the menu closes
 void InkHUD::WindowManager::openMenu()
@@ -222,15 +200,6 @@ void InkHUD::WindowManager::openMenu()
     MenuApplet *menu = (MenuApplet *)inkhud->getSystemApplet("Menu");
     menu->show(userTiles.at(settings->userTiles.focused));
 #endif //defined(MOD_INPUT_MENU)
-}
-
-// Bring the AlignStick applet to the foreground
-void InkHUD::WindowManager::openAlignStick()
-{
-    if (settings->joystick.enabled) {
-        AlignStickApplet *alignStick = (AlignStickApplet *)inkhud->getSystemApplet("AlignStick");
-        alignStick->bringToForeground();
-    }
 }
 
 // Bring the AlignStick applet to the foreground
