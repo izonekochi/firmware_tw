@@ -60,9 +60,9 @@ void setupNicheGraphics()
     InkHUD::Applet::fontMedium = InkHUD::AppletFont(cubicFont, InkHUD::AppletFont::CJK_UTF8);
     InkHUD::Applet::fontSmall = InkHUD::AppletFont(cubicFont, InkHUD::AppletFont::CJK_UTF8);
 #else //!MOD_CJK_ENABLED
-    InkHUD::Applet::fontLarge = FREESANS_12PT_WIN1252;
-    InkHUD::Applet::fontMedium = FREESANS_9PT_WIN1252;
-    InkHUD::Applet::fontSmall = FREESANS_6PT_WIN1252;
+    InkHUD::Applet::fontLarge = FREESANS_12PT_WIN1253;
+    InkHUD::Applet::fontMedium = FREESANS_9PT_WIN1253;
+    InkHUD::Applet::fontSmall = FREESANS_6PT_WIN1253;
 #endif //MOD_CJK_ENABLED
 
     // Customize default settings
