@@ -22,7 +22,7 @@ class InputMenuApplet : public SystemApplet, public concurrency::OSThread {
     void onBackground() override;
     void onButtonShortPress() override;
     void onButtonLongPress() override;
-    void onRender() override;
+    void onRender(bool full) override;
 
     void show(Tile *t, Tile *neighborTile = nullptr); // Open the simple input applet, onto a user tile
 

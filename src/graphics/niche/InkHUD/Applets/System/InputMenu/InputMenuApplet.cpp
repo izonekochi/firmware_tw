@@ -1342,7 +1342,7 @@ void InkHUD::InputMenuApplet::handleBackgroundTKey(const uint8_t modCode, const 
 }
 #endif //defined(MOD_UART_T_KEYBOARD)
 
-void InkHUD::InputMenuApplet::onRender()
+void InkHUD::InputMenuApplet::onRender(bool full)
 {
     constexpr int16_t padDivH = 2;
     const int16_t headerDivY = padDivH + fontSmall.lineHeight() + padDivH - 1;

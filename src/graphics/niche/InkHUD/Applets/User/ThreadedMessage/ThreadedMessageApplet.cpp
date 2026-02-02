@@ -50,7 +50,7 @@ InkHUD::ThreadedMessageApplet::~ThreadedMessageApplet()
 }
 #endif //defined(MOD_INPUT_MENU)
 
-void InkHUD::ThreadedMessageApplet::onRender()
+void InkHUD::ThreadedMessageApplet::onRender(bool full)
 {
     // =============
     // Draw a header

@@ -31,6 +31,8 @@ class WindowManager
     void prevTile();
     void openMenu();
     void openAlignStick();
+    void openKeyboard();
+    void closeKeyboard();
     void nextApplet();
     void prevApplet();
 #if defined(MOD_INPUT_MENU)
@@ -67,6 +69,7 @@ class WindowManager
     void findOrphanApplets(); // Find any applets left-behind when layout changes
 
     std::vector<Tile *> userTiles; // Tiles which can host user applets
+    bool keyboardOpen = false;
 
     // For convenience
     InkHUD *inkhud = nullptr;

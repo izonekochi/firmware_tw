@@ -55,7 +55,7 @@ class ThreadedMessageApplet : public Applet, public SinglePortModule
     ~ThreadedMessageApplet() override;
 #endif //defined(MOD_INPUT_MENU)
 
-    void onRender() override;
+    void onRender(bool full) override;
 
     void onActivate() override;
     void onDeactivate() override;
