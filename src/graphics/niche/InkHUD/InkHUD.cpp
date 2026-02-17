@@ -210,6 +210,12 @@ void InkHUD::InkHUD::prevApplet()
     windowManager->prevApplet();
 }
 
+// Returns the currently active applet
+InkHUD::Applet *InkHUD::InkHUD::getActiveApplet()
+{
+    return windowManager->getActiveApplet();
+}
+
 #if defined(MOD_INPUT_MENU)
 InkHUD::Tile* InkHUD::InkHUD::getFocusedTile()
 {
