@@ -74,6 +74,7 @@ class InkHUD
 
     void nextApplet();
     void prevApplet();
+    NicheGraphics::InkHUD::Applet *getActiveApplet();
 #if defined(MOD_INPUT_MENU)
     Tile* getFocusedTile();
     uint8_t getAppletIndex(Applet* app);

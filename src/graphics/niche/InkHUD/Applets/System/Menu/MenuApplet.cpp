@@ -1192,7 +1192,7 @@ void InkHUD::MenuApplet::showPage(MenuPage page)
         items.push_back(MenuItem("Back", previousPage));
 
         for (uint8_t i = 0; i < MAX_NUM_CHANNELS; i++) {
-            meshtastic_Channel &ch = channels.getByIndex(i);
+            const meshtastic_Channel &ch = channels.getByIndex(i);
 
             if (!ch.has_settings)
                 continue;
@@ -1268,7 +1268,7 @@ void InkHUD::MenuApplet::showPage(MenuPage page)
     case NODE_CONFIG_CHANNEL_PRECISION: {
         previousPage = MenuPage::NODE_CONFIG_CHANNEL_DETAIL;
         items.push_back(MenuItem("Back", previousPage));
-        meshtastic_Channel &ch = channels.getByIndex(selectedChannelIndex);
+        const meshtastic_Channel &ch = channels.getByIndex(selectedChannelIndex);
         if (!ch.settings.has_module_settings || ch.settings.module_settings.position_precision == 0) {
             items.push_back(MenuItem("Position is Off", MenuPage::NODE_CONFIG_CHANNEL_DETAIL));
             break;
@@ -1540,7 +1540,15 @@ void InkHUD::MenuApplet::onButtonShortPress()
         if (!settings->joystick.enabled) {
             if (!cursorShown) {
                 cursorShown = true;
+                // Select the first item that isn't a header
                 cursor = 0;
+                while (cursor < items.size() && items.at(cursor).isHeader) {
+                    cursor++;
+                }
+                if (cursor >= items.size()) {
+                    cursorShown = false;
+                    cursor = 0;
+                }
             } else {
                 do {
                     cursor = (cursor + 1) % items.size();
@@ -1592,7 +1600,15 @@ void InkHUD::MenuApplet::onNavUp()
 
         if (!cursorShown) {
             cursorShown = true;
-            cursor = 0;
+            // Select the last item that isn't a header
+            cursor = items.size() - 1;
+            while (items.at(cursor).isHeader) {
+                if (cursor == 0) {
+                    cursorShown = false;
+                    break;
+                }
+                cursor--;
+            }
         } else {
             do {
                 if (cursor == 0)
@@ -1613,7 +1629,15 @@ void InkHUD::MenuApplet::onNavDown()
 
         if (!cursorShown) {
             cursorShown = true;
+            // Select the first item that isn't a header
             cursor = 0;
+            while (cursor < items.size() && items.at(cursor).isHeader) {
+                cursor++;
+            }
+            if (cursor >= items.size()) {
+                cursorShown = false;
+                cursor = 0;
+            }
         } else {
             do {
                 cursor = (cursor + 1) % items.size();
@@ -1775,7 +1799,7 @@ void InkHUD::MenuApplet::populateRecipientPage()
 
     for (uint8_t i = 0; i < MAX_NUM_CHANNELS; i++) {
         // Get the channel, and check if it's enabled
-        meshtastic_Channel &channel = channels.getByIndex(i);
+        const meshtastic_Channel &channel = channels.getByIndex(i);
         if (!channel.has_settings || channel.role == meshtastic_Channel_Role_DISABLED)
             continue;
 
@@ -1845,7 +1869,7 @@ void InkHUD::MenuApplet::populateRecipientPage()
     items.push_back(MenuItem("Exit", MenuPage::EXIT));
 }
 
-void InkHUD::MenuApplet::drawInputField(uint16_t left, uint16_t top, uint16_t width, uint16_t height, std::string text)
+void InkHUD::MenuApplet::drawInputField(uint16_t left, uint16_t top, uint16_t width, uint16_t height, const std::string &text)
 {
     setFont(fontSmall);
     uint16_t wrapMaxH = 0;

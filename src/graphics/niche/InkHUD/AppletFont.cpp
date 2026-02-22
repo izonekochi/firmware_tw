@@ -43,11 +43,11 @@ InkHUD::AppletFont::AppletFont(const GFXfont &adafruitGFXFont, Encoding encoding
         // Caution: signed and unsigned types
         int8_t glyphAscender = 0 - gfxFont->glyph[i].yOffset;
         if (glyphAscender > 0)
-            this->ascenderHeight = max(this->ascenderHeight, (uint8_t)glyphAscender);
+            this->ascenderHeight = max(this->ascenderHeight, static_cast<uint8_t>(glyphAscender));
 
         int8_t glyphDescender = gfxFont->glyph[i].height + gfxFont->glyph[i].yOffset;
         if (glyphDescender > 0)
-            this->descenderHeight = max(this->descenderHeight, (uint8_t)glyphDescender);
+            this->descenderHeight = max(this->descenderHeight, static_cast<uint8_t>(glyphDescender));
     }
 
     // Apply any manual padding to grow or shrink the line size
@@ -56,7 +56,7 @@ InkHUD::AppletFont::AppletFont(const GFXfont &adafruitGFXFont, Encoding encoding
     descenderHeight += paddingBottom;
 
     // Find how far the cursor advances when we "print" a space character
-    spaceCharWidth = gfxFont->glyph[(uint8_t)' ' - gfxFont->first].xAdvance;
+    spaceCharWidth = gfxFont->glyph[static_cast<uint8_t>(' ') - gfxFont->first].xAdvance;
 }
 
 /*
@@ -102,7 +102,7 @@ uint8_t InkHUD::AppletFont::widthBetweenWords()
 
 // Convert a unicode char from set of UTF-8 bytes to UTF-32
 // Used by AppletFont::applyEncoding, which remaps unicode chars for extended ASCII fonts, based on their UTF-32 value
-uint32_t InkHUD::AppletFont::toUtf32(std::string utf8)
+uint32_t InkHUD::AppletFont::toUtf32(const std::string &utf8)
 {
     uint32_t utf32 = 0;
 
@@ -136,7 +136,7 @@ uint32_t InkHUD::AppletFont::toUtf32(std::string utf8)
 
 // Process a string, collating UTF-8 bytes, and sending them off for re-encoding to extended ASCII
 // Not all InkHUD text is passed through here, only text which could potentially contain non-ASCII chars
-std::string InkHUD::AppletFont::decodeUTF8(std::string encoded)
+std::string InkHUD::AppletFont::decodeUTF8(const std::string &encoded)
 {
     // Final processed output
     std::string decoded;
@@ -145,7 +145,7 @@ std::string InkHUD::AppletFont::decodeUTF8(std::string encoded)
     std::string utf8Char;
     uint8_t utf8CharSize = 0;
 
-    for (char &c : encoded) {
+    for (const char &c : encoded) {
 
         // If first byte
         if (utf8Char.empty()) {
@@ -196,7 +196,7 @@ std::string InkHUD::AppletFont::decodeUTF8(std::string encoded)
 
 // Re-encode a single UTF-8 character to extended ASCII
 // Target encoding depends on the font
-char InkHUD::AppletFont::applyEncoding(std::string utf8)
+char InkHUD::AppletFont::applyEncoding(const std::string &utf8)
 {
     // ##################################################### Syntactic Sugar #####################################################
 #define REMAP(in, out)                                                                                                           \
