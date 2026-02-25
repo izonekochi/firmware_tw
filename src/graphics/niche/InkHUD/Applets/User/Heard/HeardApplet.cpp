@@ -58,10 +58,8 @@ void InkHUD::HeardApplet::handleParsed(CardInfo c)
         || previous.distanceMeters != c.distanceMeters // or different position
         || previous.hopsAway != c.hopsAway)            // or different hops away
     {
-        if (settings->userApplets.autoshow[inkhud->getAppletIndex(this)]) {
-            requestAutoshow();
-            requestUpdate();
-        }
+        requestAutoshow();
+        requestUpdate();
     }
 }
 
@@ -104,10 +102,12 @@ void InkHUD::HeardApplet::populateFromNodeDB()
     for (meshtastic_NodeInfoLite *node : ordered) {
         CardInfo c;
         c.nodeNum = node->num;
+#if defined(MOD_INPUT_MENU)
         if (lastStrength.find(c.nodeNum) != lastStrength.cend())
             c.signal = lastStrength[c.nodeNum];
         else
             c.signal = getSignalStrength(node->snr, -100.0f);
+#endif //defined(MOD_INPUT_MENU)
 
         if (node->has_hops_away)
             c.hopsAway = node->hops_away;

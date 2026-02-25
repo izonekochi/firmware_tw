@@ -27,10 +27,8 @@ int InkHUD::AllMessageApplet::onReceiveTextMessage(const meshtastic_MeshPacket *
     if (getFrom(p) == nodeDB->getNodeNum())
         return 0;
 
-    if (settings->userApplets.autoshow[inkhud->getAppletIndex(this)]) {
-        requestAutoshow(); // Want to become foreground, if permitted
-        requestUpdate();   // Want to update display, if applet is foreground
-    }
+    requestAutoshow(); // Want to become foreground, if permitted
+    requestUpdate();   // Want to update display, if applet is foreground
 
     // Return zero: no issues here, carry on notifying other observers!
     return 0;

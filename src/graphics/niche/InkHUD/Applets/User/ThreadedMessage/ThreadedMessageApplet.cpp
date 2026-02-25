@@ -243,10 +243,8 @@ ProcessMessage InkHUD::ThreadedMessageApplet::handleReceived(const meshtastic_Me
             return ProcessMessage::CONTINUE;
 
         if (mp.decoded.emoji && mp.decoded.reply_id) {
-            bool bFound = false;
             for (size_t i = 0; i < store->messages.size(); i++) {
                 if (store->messages[i].id == mp.decoded.reply_id) {
-                    bFound = true;
                     store->messages[i].text += std::string("←") + std::string((const char *)mp.decoded.payload.bytes, mp.decoded.payload.size);;
                     break;
                 }
@@ -315,8 +313,7 @@ ProcessMessage InkHUD::ThreadedMessageApplet::handleReceived(const meshtastic_Me
         requestAutoshow();
 
     // Redraw the applet, perhaps.
-    if (isForeground())
-        requestUpdate(NicheGraphics::Drivers::EInk::FAST); // Want to update display, if applet is foreground
+    requestUpdate(NicheGraphics::Drivers::EInk::FAST); // Want to update display, if applet is foreground
 
     // Tell Module API to continue informing other firmware components about this message
     // We're not the only component which is interested in new text messages
