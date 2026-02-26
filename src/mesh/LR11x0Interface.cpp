@@ -36,10 +36,17 @@ static const Module::RfSwitchMode_t rfswitch_table[] = {
 #define LR1120_MAX_POWER 13
 #endif
 
+#if defined(MOD_DUAL_LORA)
+template <typename T>
+LR11x0Interface<T>::LR11x0Interface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
+                                    RADIOLIB_PIN_TYPE busy, bool bInternal)
+    : RadioLibInterface(hal, cs, irq, rst, busy, &lora, bInternal), lora(&module)
+#else //!defined(MOD_DUAL_LORA)
 template <typename T>
 LR11x0Interface<T>::LR11x0Interface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
                                     RADIOLIB_PIN_TYPE busy)
     : RadioLibInterface(hal, cs, irq, rst, busy, &lora), lora(&module)
+#endif //defined(MOD_DUAL_LORA)
 {
     LOG_WARN("LR11x0Interface(cs=%d, irq=%d, rst=%d, busy=%d)", cs, irq, rst, busy);
 }
@@ -78,6 +85,11 @@ template <typename T> bool LR11x0Interface<T>::init()
         power = LR1120_MAX_POWER;
         preambleLength = 12; // 12 is the default for operation above 2GHz
     }
+
+#if defined(MOD_DUAL_LORA)
+    if (isInternal)
+        power = ALT_LORA_DEFAULT_POWER;
+#endif //defined(MOD_DUAL_LORA)
 
 #ifdef LR11X0_RF_SWITCH_SUBGHZ
     pinMode(LR11X0_RF_SWITCH_SUBGHZ, OUTPUT);
@@ -189,6 +201,12 @@ template <typename T> bool LR11x0Interface<T>::reconfigure()
     if ((power > LR1120_MAX_POWER) && (config.lora.region == meshtastic_Config_LoRaConfig_RegionCode_LORA_24)) // 2.4G power limit
         power = LR1120_MAX_POWER;
 
+#if defined(MOD_DUAL_LORA)
+    if (isInternal)
+        power = ALT_LORA_DEFAULT_POWER;
+    LOG_INFO("Reconfigure: power output set to %d", power);
+#endif //defined(MOD_DUAL_LORA)
+
     err = lora.setOutputPower(power);
     assert(err == RADIOLIB_ERR_NONE);
 
@@ -250,6 +268,11 @@ template <typename T> void LR11x0Interface<T>::startReceive()
 
     setStandby();
 
+#if defined(MOD_DUAL_LORA)
+    // Don't actually receive if this is an internal interface
+    if (isInternal)
+        return;
+#endif //defined(MOD_DUAL_LORA)
     lora.setPreambleLength(preambleLength); // Solve RX ack fail after direct message sent.  Not sure why this is needed.
 
     // We use a 16 bit preamble so this should save some power by letting radio sit in standby mostly.

@@ -60,6 +60,10 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
      */
     static void isrTxLevel0(), isrLevel0Common(PendingISR code);
 
+#if defined(MOD_DUAL_LORA)
+    static void isrInternalTxLevel0(), isrInternalLevel0Common(PendingISR code);
+#endif //defined(MOD_DUAL_LORA)
+
     MeshPacketQueue txQueue = MeshPacketQueue(MAX_TX_QUEUE);
 
   protected:
@@ -99,10 +103,18 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     /// are _trying_ to receive a packet currently (note - we might just be waiting for one)
     bool isReceiving = false;
 
+#if defined(MOD_DUAL_LORA)
+    bool isInternal = false;
+#endif //defined(MOD_DUAL_LORA)
+
   public:
     /** Our ISR code currently needs this to find our active instance
      */
     static RadioLibInterface *instance;
+
+#if defined(MOD_DUAL_LORA)
+    static RadioLibInterface *instanceInternal;
+#endif //defined(MOD_DUAL_LORA)
 
     /**
      * Glue functions called from ISR land
@@ -133,8 +145,13 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     uint16_t txDrop = 0;
 
   public:
+#if defined(MOD_DUAL_LORA)
+    RadioLibInterface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
+                      RADIOLIB_PIN_TYPE busy, PhysicalLayer *iface = NULL, bool bInternal = false);
+#else //!defined(MOD_DUAL_LORA)
     RadioLibInterface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
                       RADIOLIB_PIN_TYPE busy, PhysicalLayer *iface = NULL);
+#endif //defined(MOD_DUAL_LORA)
 
     virtual ErrorCode send(meshtastic_MeshPacket *p) override;
 
@@ -168,6 +185,10 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
 
     /** Attempt to cancel a previously sent packet.  Returns true if a packet was found we could cancel */
     virtual bool cancelSending(NodeNum from, PacketId id) override;
+
+#if defined(MOD_DUAL_LORA)
+    virtual meshtastic_MeshPacket* cancelSendingAndGetPacket(NodeNum from, PacketId id) override;
+#endif //defined(MOD_DUAL_LORA)
 
     /** Attempt to find a packet in the TxQueue. Returns true if the packet was found. */
     virtual bool findInTxQueue(NodeNum from, PacketId id) override;
@@ -220,6 +241,9 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
      * Raw ISR handler that just calls our polymorphic method
      */
     static void isrRxLevel0();
+#if defined(MOD_DUAL_LORA)
+    static void isrInternalRxLevel0();
+#endif //defined(MOD_DUAL_LORA)
 
     /**
      * If a send was in progress finish it and return the buffer to the pool */

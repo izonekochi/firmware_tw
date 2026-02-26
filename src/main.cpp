@@ -949,6 +949,10 @@ void setup()
 
     auto rIf = initLoRa();
 
+#if defined(MOD_DUAL_LORA)
+    auto rIfInternal = initLoRa(true);
+#endif //defined(MOD_DUAL_LORA)
+
     lateInitVariant(); // Do board specific init (see extra_variants/README.md for documentation)
 
 #if !MESHTASTIC_EXCLUDE_MQTT
@@ -1003,6 +1007,12 @@ void setup()
 
         router->addInterface(std::move(rIf));
     }
+
+#if defined(MOD_DUAL_LORA)
+    if (rIfInternal)
+        router->addInterfaceInternal(std::move(rIfInternal));
+#endif //defined(MOD_DUAL_LORA)
+
 
     // This must be _after_ service.init because we need our preferences loaded from flash to have proper timeout values
     PowerFSM_setup(); // we will transition to ON in a couple of seconds, FIXME, only do this for cold boots, not waking from SDS
@@ -1132,6 +1142,16 @@ void loop()
             RadioLibInterface::instance->resetAGC();
         }
     }
+
+#if defined(MOD_DUAL_LORA)
+    if (RadioLibInterface::instanceInternal != nullptr) {
+        static uint32_t lastRadioMissedIrqPollInternal = millis();
+        if (!Throttle::isWithinTimespanMs(lastRadioMissedIrqPollInternal, 1000)) {
+            lastRadioMissedIrqPollInternal = millis();
+            RadioLibInterface::instanceInternal->pollMissedIrqs();
+        }
+    }
+#endif //defined(MOD_DUAL_LORA)
 
 #ifdef DEBUG_STACK
     static uint32_t lastPrint = 0;

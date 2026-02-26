@@ -155,6 +155,15 @@ NRF52 PRO MICRO PIN ASSIGNMENT
 #define LR11X0_DIO_AS_RF_SWITCH
 #endif
 
+#if defined(MOD_DUAL_LORA)
+#define ALT_LORA_IRQ (32 + 2)        // P1.02 IRQ
+#define ALT_LORA_NRST (32 + 1)       // P1.01 NRST
+#define ALT_LORA_BUSY (32 + 6)       // P1.06 BUSY
+#define ALT_LORA_NSS (32 + 7)        // P1.07
+#define ALT_LORA_DEFAULT_POWER -9    // default internal interface to minimum power
+#define ALT_LORA_MAX_POWER 5         // limit internal interface power <= 5dbm
+#endif //defined(MOD_DUAL_LORA)
+
 // #define SX126X_MAX_POWER 8 set this if using a high-power board!
 
 /*

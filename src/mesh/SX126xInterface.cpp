@@ -22,10 +22,17 @@
 #define SX126X_MAX_POWER 22
 #endif
 
+#if defined(MOD_DUAL_LORA)
+template <typename T>
+SX126xInterface<T>::SX126xInterface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
+                                    RADIOLIB_PIN_TYPE busy, bool bInternal)
+    : RadioLibInterface(hal, cs, irq, rst, busy, &lora, bInternal), lora(&module)
+#else //!defined(MOD_DUAL_LORA)
 template <typename T>
 SX126xInterface<T>::SX126xInterface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
                                     RADIOLIB_PIN_TYPE busy)
     : RadioLibInterface(hal, cs, irq, rst, busy, &lora), lora(&module)
+#endif //defined(MOD_DUAL_LORA)
 {
     LOG_DEBUG("SX126xInterface(cs=%d, irq=%d, rst=%d, busy=%d)", cs, irq, rst, busy);
 }
@@ -119,6 +126,11 @@ template <typename T> bool SX126xInterface<T>::init()
     // Make sure we reach the minimum power supported to turn the chip on (-9dBm)
     if (power < -9)
         power = -9;
+
+#if defined(MOD_DUAL_LORA)
+    if (isInternal)
+        power = ALT_LORA_DEFAULT_POWER;
+#endif //defined(MOD_DUAL_LORA)
 
     int res = lora.begin(getFreq(), bw, sf, cr, syncWord, power, preambleLength, tcxoVoltage, useRegulatorLDO);
 
@@ -280,6 +292,11 @@ template <typename T> bool SX126xInterface<T>::reconfigure()
     if (power > SX126X_MAX_POWER) // This chip has lower power limits than some
         power = SX126X_MAX_POWER;
 
+#if defined(MOD_DUAL_LORA)
+    if (isInternal)
+        power = ALT_LORA_DEFAULT_POWER;
+#endif //defined(MOD_DUAL_LORA)
+
     err = lora.setOutputPower(power);
     if (err != RADIOLIB_ERR_NONE)
         LOG_ERROR("SX126X setOutputPower %s%d", radioLibErr, err);
@@ -346,6 +363,12 @@ template <typename T> void SX126xInterface<T>::startReceive()
 
     setTransmitEnable(false);
     setStandby();
+
+#if defined(MOD_DUAL_LORA)
+    // Don't actually receive if this is an internal interface
+    if (isInternal)
+        return;
+#endif //defined(MOD_DUAL_LORA)
 
     // We use a 16 bit preamble so this should save some power by letting radio sit in standby mostly.
     int err = lora.startReceiveDutyCycleAuto(preambleLength, 8, MESHTASTIC_RADIOLIB_IRQ_RX_FLAGS);

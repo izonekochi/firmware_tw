@@ -162,6 +162,10 @@ class RadioInterface
     /** Attempt to cancel a previously sent packet.  Returns true if a packet was found we could cancel */
     virtual bool cancelSending(NodeNum from, PacketId id) { return false; }
 
+#if defined(MOD_DUAL_LORA)
+    virtual meshtastic_MeshPacket* cancelSendingAndGetPacket(NodeNum from, PacketId id) { return nullptr; }
+#endif //defined(MOD_DUAL_LORA)
+
     /** Attempt to find a packet in the TxQueue. Returns true if the packet was found. */
     virtual bool findInTxQueue(NodeNum from, PacketId id) { return false; }
 
@@ -280,7 +284,11 @@ class RadioInterface
     }
 };
 
+#if defined(MOD_DUAL_LORA)
+std::unique_ptr<RadioInterface> initLoRa(bool bInternal = false);
+#else //!defined(MOD_DUAL_LORA)
 std::unique_ptr<RadioInterface> initLoRa();
+#endif //defined(MOD_DUAL_LORA)
 
 /// Debug printing for packets
 void printPacket(const char *prefix, const meshtastic_MeshPacket *p);

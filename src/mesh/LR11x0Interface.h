@@ -9,8 +9,13 @@
 template <class T> class LR11x0Interface : public RadioLibInterface
 {
   public:
+#if defined(MOD_DUAL_LORA)
+    LR11x0Interface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
+                    RADIOLIB_PIN_TYPE busy, bool bInternal = false);
+#else //!defined(MOD_DUAL_LORA)
     LR11x0Interface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
                     RADIOLIB_PIN_TYPE busy);
+#endif //defined(MOD_DUAL_LORA)
 
     /// Initialise the Driver transport hardware and software.
     /// Make sure the Driver is properly configured before calling init().

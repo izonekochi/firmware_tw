@@ -384,6 +384,59 @@ ErrorCode Router::send(meshtastic_MeshPacket *p)
     return iface->send(p);
 }
 
+#if defined(MOD_DUAL_LORA)
+ErrorCode Router::sendInternal(meshtastic_MeshPacket *p)
+{
+    if (isToUs(p)) {
+        LOG_ERROR("BUG! sendInternal() called with packet destined for local node!");
+        packetPool.release(p);
+        return meshtastic_Routing_Error_BAD_REQUEST;
+    } // should have already been handled by sendLocal
+
+    // Never set the want_ack flag on broadcast packets sent over the air.
+    if (isBroadcast(p->to))
+        p->want_ack = false;
+
+    // Up until this point we might have been using 0 for the from address (if it started with the phone), but when we send over
+    // the lora we need to make sure we have replaced it with our local address
+    p->from = getFrom(p);
+
+    p->relay_node = nodeDB->getLastByteOfNodeNum(getNodeNum()); // set the relayer to us
+    // If we are the original transmitter, set the hop limit with which we start
+    if (isFromUs(p))
+        p->hop_start = p->hop_limit;
+
+    // If the packet hasn't yet been encrypted, do so now (it might already be encrypted if we are just forwarding it)
+
+    if (!(p->which_payload_variant == meshtastic_MeshPacket_encrypted_tag ||
+          p->which_payload_variant == meshtastic_MeshPacket_decoded_tag)) {
+        return meshtastic_Routing_Error_BAD_REQUEST;
+    }
+
+    fixPriority(p); // Before encryption, fix the priority if it's unset
+
+    // If the packet is not yet encrypted, do so now
+    if (p->which_payload_variant == meshtastic_MeshPacket_decoded_tag) {
+        ChannelIndex chIndex = p->channel; // keep as a local because we are about to change it
+
+        DEBUG_HEAP_BEFORE;
+        meshtastic_MeshPacket *p_decoded = packetPool.allocCopy(*p);
+        DEBUG_HEAP_AFTER("Router::sendInternal", p_decoded);
+
+        auto encodeResult = perhapsEncode(p);
+        if (encodeResult != meshtastic_Routing_Error_NONE) {
+            packetPool.release(p_decoded);
+            p->channel = 0; // Reset the channel to 0, so we don't use the failing hash again
+            abortSendAndNak(encodeResult, p);
+            return encodeResult; // FIXME - this isn't a valid ErrorCode
+        }
+        packetPool.release(p_decoded);
+    }
+    assert(ifaceInternal); // This should have been detected already in sendLocal (or we just received a packet from outside)
+    return ifaceInternal->send(p);
+}
+#endif //defined(MOD_DUAL_LORA)
+
 /** Attempt to cancel a previously sent packet.  Returns true if a packet was found we could cancel */
 bool Router::cancelSending(NodeNum from, PacketId id)
 {
@@ -394,6 +447,20 @@ bool Router::cancelSending(NodeNum from, PacketId id)
     }
     return false;
 }
+
+#if defined(MOD_DUAL_LORA)
+bool Router::cancelSendingAndSendInternal(NodeNum from, PacketId id)
+{
+    if (iface && ifaceInternal) {
+        auto p = iface->cancelSendingAndGetPacket(from, id);
+        if (!p || ifaceInternal->send(p) == ERRNO_OK)
+            return false;
+        removeRelayer(nodeDB->getLastByteOfNodeNum(nodeDB->getNodeNum()), id, from);
+        return true;
+    }
+    return false;
+}
+#endif //defined(MOD_DUAL_LORA)
 
 /** Attempt to find a packet in the TxQueue. Returns true if the packet was found. */
 bool Router::findInTxQueue(NodeNum from, PacketId id)

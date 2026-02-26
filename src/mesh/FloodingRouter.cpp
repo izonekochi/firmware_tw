@@ -25,6 +25,16 @@ ErrorCode FloodingRouter::send(meshtastic_MeshPacket *p)
     return Router::send(p);
 }
 
+#if defined(MOD_DUAL_LORA)
+ErrorCode FloodingRouter::sendInternal(meshtastic_MeshPacket *p)
+{
+    p->hop_limit = 0; // make it a zero-hop packet
+    p->relay_node = nodeDB->getLastByteOfNodeNum(getNodeNum());
+    wasSeenRecently(p);                                         // FIXME, move this to a sniffSent method
+    return Router::sendInternal(p);
+}
+#endif //defined(MOD_DUAL_LORA)
+
 bool FloodingRouter::shouldFilterReceived(const meshtastic_MeshPacket *p)
 {
     bool wasUpgraded = false;
@@ -121,10 +131,15 @@ bool FloodingRouter::roleAllowsCancelingDupe(const meshtastic_MeshPacket *p)
 void FloodingRouter::perhapsCancelDupe(const meshtastic_MeshPacket *p)
 {
     if (p->transport_mechanism == meshtastic_MeshPacket_TransportMechanism_TRANSPORT_LORA && roleAllowsCancelingDupe(p)) {
+#if defined(MOD_DUAL_LORA)
+        if (Router::cancelSendingAndSendInternal(p->from, p->id))
+            txRelayCanceled++;
+#else //!defined(MOD_DUAL_LORA)
         // cancel rebroadcast of this message *if* there was already one, unless we're a router!
         // But only LoRa packets should be able to trigger this.
         if (Router::cancelSending(p->from, p->id))
             txRelayCanceled++;
+#endif //defined(MOD_DUAL_LORA)
     }
     if (config.device.role == meshtastic_Config_DeviceConfig_Role_ROUTER_LATE && iface) {
         iface->clampToLateRebroadcastWindow(getFrom(p), p->id);

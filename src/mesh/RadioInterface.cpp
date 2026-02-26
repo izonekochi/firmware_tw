@@ -232,9 +232,35 @@ extern RadioLibHal *RadioLibHAL;
 extern SPIClass SPI1;
 #endif
 
+#if defined(MOD_DUAL_LORA)
+std::unique_ptr<RadioInterface> initLoRa(const bool bInternal)
+#else //!defined(MOD_DUAL_LORA)
 std::unique_ptr<RadioInterface> initLoRa()
+#endif //defined(MOD_DUAL_LORA)
 {
     std::unique_ptr<RadioInterface> rIf = nullptr;
+
+#if defined(MOD_DUAL_LORA)
+    if (true) {
+        static bool bFirstInit = true;
+        if (bFirstInit) {
+            // initialize dual chip NSS
+            LOG_INFO("Deselect chips...");
+#if defined(SX126X_CS)
+            pinMode(SX126X_CS, OUTPUT);
+            digitalWrite(SX126X_CS, HIGH);
+#endif //defined(SX126X_CS)
+#if defined(LR1121_SPI_NSS_PIN)
+            pinMode(LR1121_SPI_NSS_PIN, OUTPUT);
+            digitalWrite(LR1121_SPI_NSS_PIN, HIGH);
+#endif //defined(LR1121_SPI_NSS_PIN)
+            pinMode(ALT_LORA_NSS, OUTPUT);
+            digitalWrite(ALT_LORA_NSS, HIGH);
+            delay(10);
+            bFirstInit = false;
+        }
+    }
+#endif //defined(MOD_DUAL_LORA)
 
 #if ARCH_PORTDUINO
     SPISettings loraSpiSettings(portduino_config.spiSpeed, MSBFIRST, SPI_MODE0);
@@ -298,8 +324,16 @@ std::unique_ptr<RadioInterface> initLoRa()
     LockingArduinoHal *loraHal = new LockingArduinoHal(SPI1, loraSpiSettings);
     RadioLibHAL = loraHal;
 #else // HW_SPI1_DEVICE
+#if defined(MOD_DUAL_LORA)
+    LockingArduinoHal *loraHal = (LockingArduinoHal*)RadioLibHAL;
+    if (!loraHal) {
+        loraHal = new LockingArduinoHal(SPI, loraSpiSettings);
+        RadioLibHAL = loraHal;
+    }
+#else //!defined(MOD_DUAL_LORA)
     LockingArduinoHal *loraHal = new LockingArduinoHal(SPI, loraSpiSettings);
     RadioLibHAL = loraHal;
+#endif //defined(MOD_DUAL_LORA)
 #endif
 
 // radio init MUST BE AFTER service.init, so we have our radio config settings (from nodedb init)
@@ -332,8 +366,16 @@ std::unique_ptr<RadioInterface> initLoRa()
 
 #if defined(USE_SX1262) && !defined(ARCH_PORTDUINO) && !defined(TCXO_OPTIONAL) && RADIOLIB_EXCLUDE_SX126X != 1
     if ((!rIf) && (config.lora.region != meshtastic_Config_LoRaConfig_RegionCode_LORA_24)) {
+#if defined(MOD_DUAL_LORA)
+        std::unique_ptr<SX1262Interface> sxIf = nullptr;
+        if (bInternal)
+            sxIf = std::unique_ptr<SX1262Interface>(new SX1262Interface(loraHal, ALT_LORA_NSS, ALT_LORA_IRQ, ALT_LORA_NRST, ALT_LORA_BUSY, true));
+        else
+            sxIf = std::unique_ptr<SX1262Interface>(new SX1262Interface(loraHal, SX126X_CS, SX126X_DIO1, SX126X_RESET, SX126X_BUSY, false));
+#else //!defined(MOD_DUAL_LORA)
         auto sxIf =
             std::unique_ptr<SX1262Interface>(new SX1262Interface(loraHal, SX126X_CS, SX126X_DIO1, SX126X_RESET, SX126X_BUSY));
+#endif //defined(MOD_DUAL_LORA)
 #ifdef SX126X_DIO3_TCXO_VOLTAGE
         sxIf->setTCXOVoltage(SX126X_DIO3_TCXO_VOLTAGE);
 #endif
@@ -351,8 +393,16 @@ std::unique_ptr<RadioInterface> initLoRa()
 #if defined(USE_SX1262) && !defined(ARCH_PORTDUINO) && defined(TCXO_OPTIONAL)
     if ((!rIf) && (config.lora.region != meshtastic_Config_LoRaConfig_RegionCode_LORA_24)) {
         // try using the specified TCXO voltage
+#if defined(MOD_DUAL_LORA)
+        std::unique_ptr<SX1262Interface> sxIf = nullptr;
+        if (bInternal)
+            sxIf = std::unique_ptr<SX1262Interface>(new SX1262Interface(loraHal, ALT_LORA_NSS, ALT_LORA_IRQ, ALT_LORA_NRST, ALT_LORA_BUSY, true));
+        else
+            sxIf = std::unique_ptr<SX1262Interface>(new SX1262Interface(loraHal, SX126X_CS, SX126X_DIO1, SX126X_RESET, SX126X_BUSY, false));
+#else //!defined(MOD_DUAL_LORA)
         auto sxIf =
             std::unique_ptr<SX1262Interface>(new SX1262Interface(loraHal, SX126X_CS, SX126X_DIO1, SX126X_RESET, SX126X_BUSY));
+#endif //defined(MOD_DUAL_LORA)
         sxIf->setTCXOVoltage(SX126X_DIO3_TCXO_VOLTAGE);
         if (!sxIf->init()) {
             LOG_WARN("No SX1262 radio with TCXO, Vref %fV", SX126X_DIO3_TCXO_VOLTAGE);
@@ -366,7 +416,14 @@ std::unique_ptr<RadioInterface> initLoRa()
 
     if ((!rIf) && (config.lora.region != meshtastic_Config_LoRaConfig_RegionCode_LORA_24)) {
         // If specified TCXO voltage fails, attempt to use DIO3 as a reference instead
+#if defined(MOD_DUAL_LORA)
+        if (bInternal)
+            rIf = std::unique_ptr<SX1262Interface>(new SX1262Interface(loraHal, ALT_LORA_NSS, ALT_LORA_IRQ, ALT_LORA_NRST, ALT_LORA_BUSY, true));
+        else
+            rIf = std::unique_ptr<SX1262Interface>(new SX1262Interface(loraHal, SX126X_CS, SX126X_DIO1, SX126X_RESET, SX126X_BUSY, false));
+#else //!defined(MOD_DUAL_LORA)
         rIf = std::unique_ptr<SX1262Interface>(new SX1262Interface(loraHal, SX126X_CS, SX126X_DIO1, SX126X_RESET, SX126X_BUSY));
+#endif //defined(MOD_DUAL_LORA)
         if (!rIf->init()) {
             LOG_WARN("No SX1262 radio with XTAL, Vref 0.0V");
             rIf = nullptr;
@@ -408,7 +465,14 @@ std::unique_ptr<RadioInterface> initLoRa()
 
 #if defined(USE_LLCC68)
     if ((!rIf) && (config.lora.region != meshtastic_Config_LoRaConfig_RegionCode_LORA_24)) {
+#if defined(MOD_DUAL_LORA)
+        if (bInternal)
+            rIf = std::unique_ptr<LLCC68Interface>(new LLCC68Interface(loraHal, ALT_LORA_NSS, ALT_LORA_IRQ, ALT_LORA_NRST, ALT_LORA_BUSY, true));
+        else
+            rIf = std::unique_ptr<LLCC68Interface>(new LLCC68Interface(loraHal, SX126X_CS, SX126X_DIO1, SX126X_RESET, SX126X_BUSY, false));
+#else //!defined(MOD_DUAL_LORA)
         rIf = std::unique_ptr<LLCC68Interface>(new LLCC68Interface(loraHal, SX126X_CS, SX126X_DIO1, SX126X_RESET, SX126X_BUSY));
+#endif //defined(MOD_DUAL_LORA)
         if (!rIf->init()) {
             LOG_WARN("No LLCC68 radio");
             rIf = nullptr;
@@ -449,8 +513,15 @@ std::unique_ptr<RadioInterface> initLoRa()
 
 #if defined(USE_LR1121) && RADIOLIB_EXCLUDE_LR11X0 != 1
     if (!rIf) {
+#if defined(MOD_DUAL_LORA)
+        if (bInternal)
+            rIf = std::unique_ptr<LR1121Interface>(new LR1121Interface(loraHal, ALT_LORA_NSS, ALT_LORA_IRQ, ALT_LORA_NRST, ALT_LORA_BUSY, true));
+        else
+            rIf = std::unique_ptr<LR1121Interface>(new LR1121Interface(loraHal, LR1121_SPI_NSS_PIN, LR1121_IRQ_PIN, LR1121_NRESET_PIN, LR1121_BUSY_PIN, false));
+#else //!defined(MOD_DUAL_LORA)
         rIf = std::unique_ptr<LR1121Interface>(
             new LR1121Interface(loraHal, LR1121_SPI_NSS_PIN, LR1121_IRQ_PIN, LR1121_NRESET_PIN, LR1121_BUSY_PIN));
+#endif //defined(MOD_DUAL_LORA)
         if (!rIf->init()) {
             LOG_WARN("No LR1121 radio");
             rIf = nullptr;

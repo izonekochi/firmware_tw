@@ -35,11 +35,24 @@ void LockingArduinoHal::spiTransfer(uint8_t *out, size_t len, uint8_t *in)
 }
 #endif
 
+#if defined(MOD_DUAL_LORA)
+RadioLibInterface::RadioLibInterface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
+                                     RADIOLIB_PIN_TYPE busy, PhysicalLayer *_iface, bool bInternal)
+    : NotifiedWorkerThread(bInternal ? "IntRadioIf" : "RadioIf"), module(hal, cs, irq, rst, busy), iface(_iface), isInternal(bInternal)
+#else //!defined(MOD_DUAL_LORA)
 RadioLibInterface::RadioLibInterface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
                                      RADIOLIB_PIN_TYPE busy, PhysicalLayer *_iface)
     : NotifiedWorkerThread("RadioIf"), module(hal, cs, irq, rst, busy), iface(_iface)
+#endif //defined(MOD_DUAL_LORA)
 {
+#if defined(MOD_DUAL_LORA)
+    if (bInternal)
+        instanceInternal = this;
+    else
+        instance = this;
+#else //!defined(MOD_DUAL_LORA)
     instance = this;
+#endif //defined(MOD_DUAL_LORA)
 #if defined(ARCH_STM32WL) && defined(USE_SX1262)
     module.setCb_digitalWrite(stm32wl_emulate_digitalWrite);
     module.setCb_digitalRead(stm32wl_emulate_digitalRead);
@@ -75,6 +88,33 @@ void INTERRUPT_ATTR RadioLibInterface::isrTxLevel0()
 {
     isrLevel0Common(ISR_TX);
 }
+
+#if defined(MOD_DUAL_LORA)
+RadioLibInterface *RadioLibInterface::instanceInternal;
+
+void INTERRUPT_ATTR RadioLibInterface::isrInternalLevel0Common(PendingISR cause)
+{
+    instanceInternal->disableInterrupt();
+
+    BaseType_t xHigherPriorityTaskWoken;
+    instanceInternal->notifyFromISR(&xHigherPriorityTaskWoken, cause, true);
+
+    /* Force a context switch if xHigherPriorityTaskWoken is now set to pdTRUE.
+    The macro used to do this is dependent on the port and may be called
+    portEND_SWITCHING_ISR. */
+    YIELD_FROM_ISR(xHigherPriorityTaskWoken);
+}
+
+void INTERRUPT_ATTR RadioLibInterface::isrInternalRxLevel0()
+{
+    isrInternalLevel0Common(ISR_RX);
+}
+
+void INTERRUPT_ATTR RadioLibInterface::isrInternalTxLevel0()
+{
+    isrInternalLevel0Common(ISR_TX);
+}
+#endif //defined(MOD_DUAL_LORA)
 
 /** Our ISR code currently needs this to find our active instance
  */
@@ -240,6 +280,16 @@ bool RadioLibInterface::cancelSending(NodeNum from, PacketId id)
     return result;
 }
 
+#if defined(MOD_DUAL_LORA)
+meshtastic_MeshPacket* RadioLibInterface::cancelSendingAndGetPacket(NodeNum from, PacketId id)
+{
+    auto p = txQueue.remove(from, id);
+    bool result = (p != NULL);
+    LOG_DEBUG("cancelSendingAndGetPacket id=0x%x, removed=%d", id, result);
+    return p;
+}
+#endif //defined(MOD_DUAL_LORA)
+
 /** Attempt to find a packet in the TxQueue. Returns true if the packet was found. */
 bool RadioLibInterface::findInTxQueue(NodeNum from, PacketId id)
 {
@@ -281,6 +331,19 @@ void RadioLibInterface::onNotify(uint32_t notification)
                     // There's still some delay pending on this packet, so resume waiting for it to elapse
                     notifyLater(delay_remaining, TRANSMIT_DELAY_COMPLETED, false);
                 } else {
+#if defined(MOD_DUAL_LORA)
+                    if (RadioLibInterface::instance->isChannelActive() || RadioLibInterface::instanceInternal->isChannelActive()) { // check if there is currently a LoRa packet on the channel
+                        startReceive();      // try receiving this packet, afterwards we'll be trying to transmit again
+                        setTransmitDelay();
+                    } else {
+                        // Send any outgoing packets we have ready as fast as possible to keep the time between channel scan and
+                        // actual transmission as short as possible
+                        txp = txQueue.dequeue();
+                        assert(txp);
+                        startSend(txp);
+                        LOG_DEBUG("%d packets remain in the TX queue", txQueue.getMaxLen() - txQueue.getFree());
+                    }
+#else //!defined(MOD_DUAL_LORA)
                     if (isChannelActive()) { // check if there is currently a LoRa packet on the channel
                         startReceive();      // try receiving this packet, afterwards we'll be trying to transmit again
                         setTransmitDelay();
@@ -292,6 +355,7 @@ void RadioLibInterface::onNotify(uint32_t notification)
                         startSend(txp);
                         LOG_DEBUG("%d packets remain in the TX queue", txQueue.getMaxLen() - txQueue.getFree());
                     }
+#endif //defined(MOD_DUAL_LORA)
                 }
             }
         } else {
@@ -419,6 +483,16 @@ void RadioLibInterface::completeSending()
 
         // We are done sending that packet, release it
         packetPool.release(p);
+
+#if defined(MOD_DUAL_LORA)
+        if (isInternal) {
+            if (true) {
+                // perform AGC reset for external interface to resolve deafness...
+                LOG_DEBUG("Reset AGC after internal interface completeSending");
+                instance->resetAGC();
+            }
+        }
+#endif //defined(MOD_DUAL_LORA)
     }
 }
 
@@ -580,7 +654,14 @@ bool RadioLibInterface::startSend(meshtastic_MeshPacket *txp)
         } else {
             // Must be done AFTER, starting transmit, because startTransmit clears (possibly stale) interrupt pending register
             // bits
+#if defined(MOD_DUAL_LORA)
+            if (isInternal)
+                enableInterrupt(isrInternalTxLevel0);
+            else
+                enableInterrupt(isrTxLevel0);
+#else //!defined(MOD_DUAL_LORA)
             enableInterrupt(isrTxLevel0);
+#endif //defined(MOD_DUAL_LORA)
             lastTxStart = millis();
             printPacket("Started Tx", txp);
         }

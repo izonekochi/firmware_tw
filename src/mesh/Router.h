@@ -22,6 +22,9 @@ class Router : protected concurrency::OSThread, protected PacketHistory
 
   protected:
     std::unique_ptr<RadioInterface> iface = nullptr;
+#if defined(MOD_DUAL_LORA)
+    std::unique_ptr<RadioInterface> ifaceInternal = nullptr;
+#endif //defined(MOD_DUAL_LORA)
 
   public:
     /**
@@ -34,6 +37,11 @@ class Router : protected concurrency::OSThread, protected PacketHistory
      * Currently we only allow one interface, that may change in the future
      */
     void addInterface(std::unique_ptr<RadioInterface> _iface) { iface = std::move(_iface); }
+
+#if defined(MOD_DUAL_LORA)
+    void addInterfaceInternal(std::unique_ptr<RadioInterface> _iface) { ifaceInternal = std::move(_iface); }
+    bool cancelSendingAndSendInternal(NodeNum from, PacketId id);
+#endif //defined(MOD_DUAL_LORA)
 
     /**
      * do idle processing
@@ -87,6 +95,9 @@ class Router : protected concurrency::OSThread, protected PacketHistory
      */
     virtual ErrorCode send(meshtastic_MeshPacket *p);
     virtual ErrorCode rawSend(meshtastic_MeshPacket *p);
+#if defined(MOD_DUAL_LORA)
+    virtual ErrorCode sendInternal(meshtastic_MeshPacket *p);
+#endif //defined(MOD_DUAL_LORA)
 
     /* Statistics for the amount of duplicate received packets and the amount of times we cancel a relay because someone did it
         before us */

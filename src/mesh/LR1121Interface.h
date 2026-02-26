@@ -9,8 +9,13 @@
 class LR1121Interface : public LR11x0Interface<LR1121>
 {
   public:
+#if defined(MOD_DUAL_LORA)
+    LR1121Interface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
+                    RADIOLIB_PIN_TYPE busy, bool bInternal = false);
+#else //!defined(MOD_DUAL_LORA)
     LR1121Interface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
                     RADIOLIB_PIN_TYPE busy);
+#endif //defined(MOD_DUAL_LORA)
     bool wideLora() override;
 };
 #endif

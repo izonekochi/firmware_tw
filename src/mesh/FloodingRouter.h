@@ -41,6 +41,10 @@ class FloodingRouter : public Router
      */
     virtual ErrorCode send(meshtastic_MeshPacket *p) override;
 
+#if defined(MOD_DUAL_LORA)
+    virtual ErrorCode sendInternal(meshtastic_MeshPacket *p) override;
+#endif //defined(MOD_DUAL_LORA)
+
   protected:
     /**
      * Should this incoming filter be dropped?
