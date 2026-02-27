@@ -474,7 +474,7 @@ void RadioLibInterface::completeSending()
         // We are done sending that packet, release it
         packetPool.release(p);
 
-#if defined(MOD_DUAL_LORA)
+#if defined(MOD_DUAL_LORA) && defined(MOD_DUAL_LORA_AGCRESET)
         if (isAlternative) {
             // perform AGC reset for external interface to resolve deafness...
             LOG_DEBUG("Reset primary AGC after alternative interface completeSending");
