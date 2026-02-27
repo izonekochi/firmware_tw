@@ -285,7 +285,7 @@ class RadioInterface
 };
 
 #if defined(MOD_DUAL_LORA)
-std::unique_ptr<RadioInterface> initLoRa(bool bInternal = false);
+std::unique_ptr<RadioInterface> initLoRa(bool bAlternative = false);
 #else //!defined(MOD_DUAL_LORA)
 std::unique_ptr<RadioInterface> initLoRa();
 #endif //defined(MOD_DUAL_LORA)

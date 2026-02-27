@@ -5,8 +5,8 @@
 
 #if defined(MOD_DUAL_LORA)
 LLCC68Interface::LLCC68Interface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
-                                 RADIOLIB_PIN_TYPE busy, bool bInternal)
-    : SX126xInterface(hal, cs, irq, rst, busy, bInternal)
+                                 RADIOLIB_PIN_TYPE busy, bool bAlternative)
+    : SX126xInterface(hal, cs, irq, rst, busy, bAlternative)
 #else //!defined(MOD_DUAL_LORA)
 LLCC68Interface::LLCC68Interface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
                                  RADIOLIB_PIN_TYPE busy)

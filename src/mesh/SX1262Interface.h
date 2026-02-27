@@ -11,7 +11,7 @@ class SX1262Interface : public SX126xInterface<SX1262>
   public:
 #if defined(MOD_DUAL_LORA)
     SX1262Interface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
-                    RADIOLIB_PIN_TYPE busy, bool bInternal = false);
+                    RADIOLIB_PIN_TYPE busy, bool bAlternative = false);
 #else //!defined(MOD_DUAL_LORA)
     SX1262Interface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
                     RADIOLIB_PIN_TYPE busy);

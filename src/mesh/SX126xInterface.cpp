@@ -25,8 +25,8 @@
 #if defined(MOD_DUAL_LORA)
 template <typename T>
 SX126xInterface<T>::SX126xInterface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
-                                    RADIOLIB_PIN_TYPE busy, bool bInternal)
-    : RadioLibInterface(hal, cs, irq, rst, busy, &lora, bInternal), lora(&module)
+                                    RADIOLIB_PIN_TYPE busy, bool bAlternative)
+    : RadioLibInterface(hal, cs, irq, rst, busy, &lora, bAlternative), lora(&module)
 #else //!defined(MOD_DUAL_LORA)
 template <typename T>
 SX126xInterface<T>::SX126xInterface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
@@ -128,7 +128,7 @@ template <typename T> bool SX126xInterface<T>::init()
         power = -9;
 
 #if defined(MOD_DUAL_LORA)
-    if (isInternal)
+    if (isAlternative)
         power = ALT_LORA_DEFAULT_POWER;
 #endif //defined(MOD_DUAL_LORA)
 
@@ -293,7 +293,7 @@ template <typename T> bool SX126xInterface<T>::reconfigure()
         power = SX126X_MAX_POWER;
 
 #if defined(MOD_DUAL_LORA)
-    if (isInternal)
+    if (isAlternative)
         power = ALT_LORA_DEFAULT_POWER;
 #endif //defined(MOD_DUAL_LORA)
 
@@ -366,8 +366,12 @@ template <typename T> void SX126xInterface<T>::startReceive()
 
 #if defined(MOD_DUAL_LORA)
     // Don't actually receive if this is an internal interface
-    if (isInternal)
+    if (isAlternative) {
+        // ask primary interface to start receive becaure we may asked it to standby
+        if (!instance->getReceiving())
+            instance->startReceive();
         return;
+    }
 #endif //defined(MOD_DUAL_LORA)
 
     // We use a 16 bit preamble so this should save some power by letting radio sit in standby mostly.

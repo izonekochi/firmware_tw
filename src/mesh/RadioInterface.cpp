@@ -233,7 +233,7 @@ extern SPIClass SPI1;
 #endif
 
 #if defined(MOD_DUAL_LORA)
-std::unique_ptr<RadioInterface> initLoRa(const bool bInternal)
+std::unique_ptr<RadioInterface> initLoRa(const bool bAlternative)
 #else //!defined(MOD_DUAL_LORA)
 std::unique_ptr<RadioInterface> initLoRa()
 #endif //defined(MOD_DUAL_LORA)
@@ -368,7 +368,7 @@ std::unique_ptr<RadioInterface> initLoRa()
     if ((!rIf) && (config.lora.region != meshtastic_Config_LoRaConfig_RegionCode_LORA_24)) {
 #if defined(MOD_DUAL_LORA)
         std::unique_ptr<SX1262Interface> sxIf = nullptr;
-        if (bInternal)
+        if (bAlternative)
             sxIf = std::unique_ptr<SX1262Interface>(new SX1262Interface(loraHal, ALT_LORA_NSS, ALT_LORA_IRQ, ALT_LORA_NRST, ALT_LORA_BUSY, true));
         else
             sxIf = std::unique_ptr<SX1262Interface>(new SX1262Interface(loraHal, SX126X_CS, SX126X_DIO1, SX126X_RESET, SX126X_BUSY, false));
@@ -395,7 +395,7 @@ std::unique_ptr<RadioInterface> initLoRa()
         // try using the specified TCXO voltage
 #if defined(MOD_DUAL_LORA)
         std::unique_ptr<SX1262Interface> sxIf = nullptr;
-        if (bInternal)
+        if (bAlternative)
             sxIf = std::unique_ptr<SX1262Interface>(new SX1262Interface(loraHal, ALT_LORA_NSS, ALT_LORA_IRQ, ALT_LORA_NRST, ALT_LORA_BUSY, true));
         else
             sxIf = std::unique_ptr<SX1262Interface>(new SX1262Interface(loraHal, SX126X_CS, SX126X_DIO1, SX126X_RESET, SX126X_BUSY, false));
@@ -417,7 +417,7 @@ std::unique_ptr<RadioInterface> initLoRa()
     if ((!rIf) && (config.lora.region != meshtastic_Config_LoRaConfig_RegionCode_LORA_24)) {
         // If specified TCXO voltage fails, attempt to use DIO3 as a reference instead
 #if defined(MOD_DUAL_LORA)
-        if (bInternal)
+        if (bAlternative)
             rIf = std::unique_ptr<SX1262Interface>(new SX1262Interface(loraHal, ALT_LORA_NSS, ALT_LORA_IRQ, ALT_LORA_NRST, ALT_LORA_BUSY, true));
         else
             rIf = std::unique_ptr<SX1262Interface>(new SX1262Interface(loraHal, SX126X_CS, SX126X_DIO1, SX126X_RESET, SX126X_BUSY, false));
@@ -466,7 +466,7 @@ std::unique_ptr<RadioInterface> initLoRa()
 #if defined(USE_LLCC68)
     if ((!rIf) && (config.lora.region != meshtastic_Config_LoRaConfig_RegionCode_LORA_24)) {
 #if defined(MOD_DUAL_LORA)
-        if (bInternal)
+        if (bAlternative)
             rIf = std::unique_ptr<LLCC68Interface>(new LLCC68Interface(loraHal, ALT_LORA_NSS, ALT_LORA_IRQ, ALT_LORA_NRST, ALT_LORA_BUSY, true));
         else
             rIf = std::unique_ptr<LLCC68Interface>(new LLCC68Interface(loraHal, SX126X_CS, SX126X_DIO1, SX126X_RESET, SX126X_BUSY, false));
@@ -514,7 +514,7 @@ std::unique_ptr<RadioInterface> initLoRa()
 #if defined(USE_LR1121) && RADIOLIB_EXCLUDE_LR11X0 != 1
     if (!rIf) {
 #if defined(MOD_DUAL_LORA)
-        if (bInternal)
+        if (bAlternative)
             rIf = std::unique_ptr<LR1121Interface>(new LR1121Interface(loraHal, ALT_LORA_NSS, ALT_LORA_IRQ, ALT_LORA_NRST, ALT_LORA_BUSY, true));
         else
             rIf = std::unique_ptr<LR1121Interface>(new LR1121Interface(loraHal, LR1121_SPI_NSS_PIN, LR1121_IRQ_PIN, LR1121_NRESET_PIN, LR1121_BUSY_PIN, false));

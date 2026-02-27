@@ -26,12 +26,12 @@ ErrorCode FloodingRouter::send(meshtastic_MeshPacket *p)
 }
 
 #if defined(MOD_DUAL_LORA)
-ErrorCode FloodingRouter::sendInternal(meshtastic_MeshPacket *p)
+ErrorCode FloodingRouter::sendAlt(meshtastic_MeshPacket *p)
 {
     p->hop_limit = 0; // make it a zero-hop packet
     p->relay_node = nodeDB->getLastByteOfNodeNum(getNodeNum());
     wasSeenRecently(p);                                         // FIXME, move this to a sniffSent method
-    return Router::sendInternal(p);
+    return Router::sendAlt(p);
 }
 #endif //defined(MOD_DUAL_LORA)
 

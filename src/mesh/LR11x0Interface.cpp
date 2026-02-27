@@ -39,8 +39,8 @@ static const Module::RfSwitchMode_t rfswitch_table[] = {
 #if defined(MOD_DUAL_LORA)
 template <typename T>
 LR11x0Interface<T>::LR11x0Interface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
-                                    RADIOLIB_PIN_TYPE busy, bool bInternal)
-    : RadioLibInterface(hal, cs, irq, rst, busy, &lora, bInternal), lora(&module)
+                                    RADIOLIB_PIN_TYPE busy, bool bAlternative)
+    : RadioLibInterface(hal, cs, irq, rst, busy, &lora, bAlternative), lora(&module)
 #else //!defined(MOD_DUAL_LORA)
 template <typename T>
 LR11x0Interface<T>::LR11x0Interface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
@@ -87,7 +87,7 @@ template <typename T> bool LR11x0Interface<T>::init()
     }
 
 #if defined(MOD_DUAL_LORA)
-    if (isInternal)
+    if (isAlternative)
         power = ALT_LORA_DEFAULT_POWER;
 #endif //defined(MOD_DUAL_LORA)
 
@@ -202,7 +202,7 @@ template <typename T> bool LR11x0Interface<T>::reconfigure()
         power = LR1120_MAX_POWER;
 
 #if defined(MOD_DUAL_LORA)
-    if (isInternal)
+    if (isAlternative)
         power = ALT_LORA_DEFAULT_POWER;
     LOG_INFO("Reconfigure: power output set to %d", power);
 #endif //defined(MOD_DUAL_LORA)
@@ -270,8 +270,12 @@ template <typename T> void LR11x0Interface<T>::startReceive()
 
 #if defined(MOD_DUAL_LORA)
     // Don't actually receive if this is an internal interface
-    if (isInternal)
+    if (isAlternative) {
+        // ask primary interface to start receive becaure we may asked it to standby
+        if (!instance->getReceiving())
+            instance->startReceive();
         return;
+    }
 #endif //defined(MOD_DUAL_LORA)
     lora.setPreambleLength(preambleLength); // Solve RX ack fail after direct message sent.  Not sure why this is needed.
 

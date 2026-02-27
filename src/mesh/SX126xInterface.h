@@ -12,7 +12,7 @@ template <class T> class SX126xInterface : public RadioLibInterface
   public:
 #if defined(MOD_DUAL_LORA)
     SX126xInterface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
-                    RADIOLIB_PIN_TYPE busy, bool bInternal = false);
+                    RADIOLIB_PIN_TYPE busy, bool bAlternative = false);
 #else //!defined(MOD_DUAL_LORA)
     SX126xInterface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
                     RADIOLIB_PIN_TYPE busy);

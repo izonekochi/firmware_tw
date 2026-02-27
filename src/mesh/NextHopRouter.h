@@ -74,7 +74,7 @@ class NextHopRouter : public FloodingRouter
     virtual ErrorCode send(meshtastic_MeshPacket *p) override;
 
 #if defined(MOD_DUAL_LORA)
-    virtual ErrorCode sendInternal(meshtastic_MeshPacket *p) override;
+    virtual ErrorCode sendAlt(meshtastic_MeshPacket *p) override;
 #endif //defined(MOD_DUAL_LORA)
 
     /** Do our retransmission handling */

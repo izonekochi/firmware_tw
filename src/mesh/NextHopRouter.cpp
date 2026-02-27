@@ -35,14 +35,13 @@ ErrorCode NextHopRouter::send(meshtastic_MeshPacket *p)
 }
 
 #if defined(MOD_DUAL_LORA)
-ErrorCode NextHopRouter::sendInternal(meshtastic_MeshPacket *p)
+ErrorCode NextHopRouter::sendAlt(meshtastic_MeshPacket *p)
 {
-    p->hop_limit = 0;
     p->relay_node = nodeDB->getLastByteOfNodeNum(getNodeNum()); // First set the relayer to us
     wasSeenRecently(p);                                         // FIXME, move this to a sniffSent method
     p->next_hop = getNextHop(p->to, p->relay_node); // set the next hop
     LOG_DEBUG("Setting next hop for packet with dest %x to %x", p->to, p->next_hop);
-    return Router::sendInternal(p);
+    return Router::sendAlt(p);
 }
 #endif //defined(MOD_DUAL_LORA)
 
@@ -180,9 +179,9 @@ bool NextHopRouter::perhapsRebroadcast(const meshtastic_MeshPacket *p)
             meshtastic_MeshPacket *tosend = packetPool.allocCopy(*p); // keep a copy because we will be sending it
             LOG_INFO("Rebroadcast received zero-hop message coming from %x", p->relay_node);
             if (p->next_hop == NO_NEXT_HOP_PREFERENCE)
-                FloodingRouter::sendInternal(tosend);
+                FloodingRouter::sendAlt(tosend);
             else
-                NextHopRouter::sendInternal(tosend);
+                NextHopRouter::sendAlt(tosend);
             return true;
         }
     }

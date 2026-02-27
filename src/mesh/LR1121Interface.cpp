@@ -5,8 +5,8 @@
 
 #if defined(MOD_DUAL_LORA)
 LR1121Interface::LR1121Interface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
-                                 RADIOLIB_PIN_TYPE busy, bool bInternal)
-    : LR11x0Interface(hal, cs, irq, rst, busy, bInternal)
+                                 RADIOLIB_PIN_TYPE busy, bool bAlternative)
+    : LR11x0Interface(hal, cs, irq, rst, busy, bAlternative)
 #else //!defined(MOD_DUAL_LORA)
 LR1121Interface::LR1121Interface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
                                  RADIOLIB_PIN_TYPE busy)

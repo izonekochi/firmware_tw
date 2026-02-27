@@ -61,7 +61,7 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     static void isrTxLevel0(), isrLevel0Common(PendingISR code);
 
 #if defined(MOD_DUAL_LORA)
-    static void isrInternalTxLevel0(), isrInternalLevel0Common(PendingISR code);
+    static void isrAltTxLevel0(), isrAltLevel0Common(PendingISR code);
 #endif //defined(MOD_DUAL_LORA)
 
     MeshPacketQueue txQueue = MeshPacketQueue(MAX_TX_QUEUE);
@@ -104,7 +104,7 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     bool isReceiving = false;
 
 #if defined(MOD_DUAL_LORA)
-    bool isInternal = false;
+    bool isAlternative = false;
 #endif //defined(MOD_DUAL_LORA)
 
   public:
@@ -113,7 +113,8 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     static RadioLibInterface *instance;
 
 #if defined(MOD_DUAL_LORA)
-    static RadioLibInterface *instanceInternal;
+    bool getReceiving() const { return isReceiving; }
+    static RadioLibInterface *instanceAlt;
 #endif //defined(MOD_DUAL_LORA)
 
     /**
@@ -147,7 +148,7 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
   public:
 #if defined(MOD_DUAL_LORA)
     RadioLibInterface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
-                      RADIOLIB_PIN_TYPE busy, PhysicalLayer *iface = NULL, bool bInternal = false);
+                      RADIOLIB_PIN_TYPE busy, PhysicalLayer *iface = NULL, bool bAlternative = false);
 #else //!defined(MOD_DUAL_LORA)
     RadioLibInterface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
                       RADIOLIB_PIN_TYPE busy, PhysicalLayer *iface = NULL);
@@ -242,7 +243,7 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
      */
     static void isrRxLevel0();
 #if defined(MOD_DUAL_LORA)
-    static void isrInternalRxLevel0();
+    static void isrAltRxLevel0();
 #endif //defined(MOD_DUAL_LORA)
 
     /**

@@ -950,7 +950,7 @@ void setup()
     auto rIf = initLoRa();
 
 #if defined(MOD_DUAL_LORA)
-    auto rIfInternal = initLoRa(true);
+    auto rIfAlt = initLoRa(true);
 #endif //defined(MOD_DUAL_LORA)
 
     lateInitVariant(); // Do board specific init (see extra_variants/README.md for documentation)
@@ -1009,8 +1009,8 @@ void setup()
     }
 
 #if defined(MOD_DUAL_LORA)
-    if (rIfInternal)
-        router->addInterfaceInternal(std::move(rIfInternal));
+    if (rIfAlt)
+        router->addAltInterface(std::move(rIfAlt));
 #endif //defined(MOD_DUAL_LORA)
 
 
@@ -1144,11 +1144,16 @@ void loop()
     }
 
 #if defined(MOD_DUAL_LORA)
-    if (RadioLibInterface::instanceInternal != nullptr) {
-        static uint32_t lastRadioMissedIrqPollInternal = millis();
-        if (!Throttle::isWithinTimespanMs(lastRadioMissedIrqPollInternal, 1000)) {
-            lastRadioMissedIrqPollInternal = millis();
-            RadioLibInterface::instanceInternal->pollMissedIrqs();
+    if (RadioLibInterface::instanceAlt != nullptr) {
+        static uint32_t lastAltRadioMissedIrqPoll = millis();
+        if (!Throttle::isWithinTimespanMs(lastAltRadioMissedIrqPoll, 1000)) {
+            lastAltRadioMissedIrqPoll = millis();
+            RadioLibInterface::instanceAlt->pollMissedIrqs();
+        }
+        static uint32_t lastAltAgcReset;
+        if (!Throttle::isWithinTimespanMs(lastAltAgcReset, AGC_RESET_INTERVAL_MS)) {
+            lastAltAgcReset = millis();
+            RadioLibInterface::instanceAlt->resetAGC();
         }
     }
 #endif //defined(MOD_DUAL_LORA)

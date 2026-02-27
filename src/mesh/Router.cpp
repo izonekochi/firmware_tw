@@ -385,10 +385,10 @@ ErrorCode Router::send(meshtastic_MeshPacket *p)
 }
 
 #if defined(MOD_DUAL_LORA)
-ErrorCode Router::sendInternal(meshtastic_MeshPacket *p)
+ErrorCode Router::sendAlt(meshtastic_MeshPacket *p)
 {
     if (isToUs(p)) {
-        LOG_ERROR("BUG! sendInternal() called with packet destined for local node!");
+        LOG_ERROR("BUG! sendAlt() called with packet destined for local node!");
         packetPool.release(p);
         return meshtastic_Routing_Error_BAD_REQUEST;
     } // should have already been handled by sendLocal
@@ -421,7 +421,7 @@ ErrorCode Router::sendInternal(meshtastic_MeshPacket *p)
 
         DEBUG_HEAP_BEFORE;
         meshtastic_MeshPacket *p_decoded = packetPool.allocCopy(*p);
-        DEBUG_HEAP_AFTER("Router::sendInternal", p_decoded);
+        DEBUG_HEAP_AFTER("Router::sendAlt", p_decoded);
 
         auto encodeResult = perhapsEncode(p);
         if (encodeResult != meshtastic_Routing_Error_NONE) {
@@ -432,8 +432,8 @@ ErrorCode Router::sendInternal(meshtastic_MeshPacket *p)
         }
         packetPool.release(p_decoded);
     }
-    assert(ifaceInternal); // This should have been detected already in sendLocal (or we just received a packet from outside)
-    return ifaceInternal->send(p);
+    assert(ifaceAlt); // This should have been detected already in sendLocal (or we just received a packet from outside)
+    return ifaceAlt->send(p);
 }
 #endif //defined(MOD_DUAL_LORA)
 
@@ -451,9 +451,9 @@ bool Router::cancelSending(NodeNum from, PacketId id)
 #if defined(MOD_DUAL_LORA)
 bool Router::cancelSendingAndSendInternal(NodeNum from, PacketId id)
 {
-    if (iface && ifaceInternal) {
+    if (iface && ifaceAlt) {
         auto p = iface->cancelSendingAndGetPacket(from, id);
-        if (!p || ifaceInternal->send(p) == ERRNO_OK)
+        if (!p || ifaceAlt->send(p) == ERRNO_OK)
             return false;
         removeRelayer(nodeDB->getLastByteOfNodeNum(nodeDB->getNodeNum()), id, from);
         return true;

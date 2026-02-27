@@ -37,8 +37,8 @@ void LockingArduinoHal::spiTransfer(uint8_t *out, size_t len, uint8_t *in)
 
 #if defined(MOD_DUAL_LORA)
 RadioLibInterface::RadioLibInterface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
-                                     RADIOLIB_PIN_TYPE busy, PhysicalLayer *_iface, bool bInternal)
-    : NotifiedWorkerThread(bInternal ? "IntRadioIf" : "RadioIf"), module(hal, cs, irq, rst, busy), iface(_iface), isInternal(bInternal)
+                                     RADIOLIB_PIN_TYPE busy, PhysicalLayer *_iface, bool bAlternative)
+    : NotifiedWorkerThread(bAlternative ? "AltRadioIf" : "RadioIf"), module(hal, cs, irq, rst, busy), iface(_iface), isAlternative(bAlternative)
 #else //!defined(MOD_DUAL_LORA)
 RadioLibInterface::RadioLibInterface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
                                      RADIOLIB_PIN_TYPE busy, PhysicalLayer *_iface)
@@ -46,8 +46,8 @@ RadioLibInterface::RadioLibInterface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE c
 #endif //defined(MOD_DUAL_LORA)
 {
 #if defined(MOD_DUAL_LORA)
-    if (bInternal)
-        instanceInternal = this;
+    if (bAlternative)
+        instanceAlt = this;
     else
         instance = this;
 #else //!defined(MOD_DUAL_LORA)
@@ -90,14 +90,14 @@ void INTERRUPT_ATTR RadioLibInterface::isrTxLevel0()
 }
 
 #if defined(MOD_DUAL_LORA)
-RadioLibInterface *RadioLibInterface::instanceInternal;
+RadioLibInterface *RadioLibInterface::instanceAlt;
 
-void INTERRUPT_ATTR RadioLibInterface::isrInternalLevel0Common(PendingISR cause)
+void INTERRUPT_ATTR RadioLibInterface::isrAltLevel0Common(PendingISR cause)
 {
-    instanceInternal->disableInterrupt();
+    instanceAlt->disableInterrupt();
 
     BaseType_t xHigherPriorityTaskWoken;
-    instanceInternal->notifyFromISR(&xHigherPriorityTaskWoken, cause, true);
+    instanceAlt->notifyFromISR(&xHigherPriorityTaskWoken, cause, true);
 
     /* Force a context switch if xHigherPriorityTaskWoken is now set to pdTRUE.
     The macro used to do this is dependent on the port and may be called
@@ -105,14 +105,14 @@ void INTERRUPT_ATTR RadioLibInterface::isrInternalLevel0Common(PendingISR cause)
     YIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
-void INTERRUPT_ATTR RadioLibInterface::isrInternalRxLevel0()
+void INTERRUPT_ATTR RadioLibInterface::isrAltRxLevel0()
 {
-    isrInternalLevel0Common(ISR_RX);
+    isrAltLevel0Common(ISR_RX);
 }
 
-void INTERRUPT_ATTR RadioLibInterface::isrInternalTxLevel0()
+void INTERRUPT_ATTR RadioLibInterface::isrAltTxLevel0()
 {
-    isrInternalLevel0Common(ISR_TX);
+    isrAltLevel0Common(ISR_TX);
 }
 #endif //defined(MOD_DUAL_LORA)
 
@@ -321,7 +321,11 @@ void RadioLibInterface::onNotify(uint32_t notification)
         // If we are not currently in receive mode, then restart the random delay (this can happen if the main thread
         // has placed the unit into standby)  FIXME, how will this work if the chipset is in sleep mode?
         if (!txQueue.empty()) {
+#if defined(MOD_DUAL_LORA)
+            if (!instance->canSendImmediately() || !instanceAlt->canSendImmediately()) {
+#else //!defined(MOD_DUAL_LORA)
             if (!canSendImmediately()) {
+#endif //defined(MOD_DUAL_LORA)
                 setTransmitDelay(); // currently Rx/Tx-ing: reset random delay
             } else {
                 meshtastic_MeshPacket *txp = txQueue.getFront();
@@ -331,19 +335,6 @@ void RadioLibInterface::onNotify(uint32_t notification)
                     // There's still some delay pending on this packet, so resume waiting for it to elapse
                     notifyLater(delay_remaining, TRANSMIT_DELAY_COMPLETED, false);
                 } else {
-#if defined(MOD_DUAL_LORA)
-                    if (RadioLibInterface::instance->isChannelActive() || RadioLibInterface::instanceInternal->isChannelActive()) { // check if there is currently a LoRa packet on the channel
-                        startReceive();      // try receiving this packet, afterwards we'll be trying to transmit again
-                        setTransmitDelay();
-                    } else {
-                        // Send any outgoing packets we have ready as fast as possible to keep the time between channel scan and
-                        // actual transmission as short as possible
-                        txp = txQueue.dequeue();
-                        assert(txp);
-                        startSend(txp);
-                        LOG_DEBUG("%d packets remain in the TX queue", txQueue.getMaxLen() - txQueue.getFree());
-                    }
-#else //!defined(MOD_DUAL_LORA)
                     if (isChannelActive()) { // check if there is currently a LoRa packet on the channel
                         startReceive();      // try receiving this packet, afterwards we'll be trying to transmit again
                         setTransmitDelay();
@@ -355,7 +346,6 @@ void RadioLibInterface::onNotify(uint32_t notification)
                         startSend(txp);
                         LOG_DEBUG("%d packets remain in the TX queue", txQueue.getMaxLen() - txQueue.getFree());
                     }
-#endif //defined(MOD_DUAL_LORA)
                 }
             }
         } else {
@@ -485,12 +475,10 @@ void RadioLibInterface::completeSending()
         packetPool.release(p);
 
 #if defined(MOD_DUAL_LORA)
-        if (isInternal) {
-            if (true) {
-                // perform AGC reset for external interface to resolve deafness...
-                LOG_DEBUG("Reset AGC after internal interface completeSending");
-                instance->resetAGC();
-            }
+        if (isAlternative) {
+            // perform AGC reset for external interface to resolve deafness...
+            LOG_DEBUG("Reset primary AGC after alternative interface completeSending");
+            instance->resetAGC();
         }
 #endif //defined(MOD_DUAL_LORA)
     }
@@ -618,6 +606,13 @@ void RadioLibInterface::checkRxDoneIrqFlag()
 
 void RadioLibInterface::configHardwareForSend()
 {
+#if defined(MOD_DUAL_LORA)
+    // Put another interface into standby mode...
+    if (isAlternative)
+        RadioLibInterface::instance->setStandby();
+    else
+        RadioLibInterface::instanceAlt->setStandby();
+#endif //defined(MOD_DUAL_LORA)
     powerMon->setState(meshtastic_PowerMon_State_Lora_TXOn);
 }
 
@@ -655,8 +650,8 @@ bool RadioLibInterface::startSend(meshtastic_MeshPacket *txp)
             // Must be done AFTER, starting transmit, because startTransmit clears (possibly stale) interrupt pending register
             // bits
 #if defined(MOD_DUAL_LORA)
-            if (isInternal)
-                enableInterrupt(isrInternalTxLevel0);
+            if (isAlternative)
+                enableInterrupt(isrAltTxLevel0);
             else
                 enableInterrupt(isrTxLevel0);
 #else //!defined(MOD_DUAL_LORA)
