@@ -1650,6 +1650,7 @@ void InkHUD::InputMenuApplet::handleKeyboardPress()
                 }
             }
             else if (cmdCode == 1) {
+#if defined(MOD_CJK_ENABLED)
                 for (size_t pos = 0; pos < currentInput.length(); ) {
                     size_t numChars = getUTF8Chars((uint8_t*)currentInput.c_str() + pos);
                     if (numChars < 1)
@@ -1658,6 +1659,9 @@ void InkHUD::InputMenuApplet::handleKeyboardPress()
                         currentInput = currentInput.substr(0, pos);
                     pos += numChars;
                 }
+#else //!defined(MOD_CJK_ENABLED)
+                currentInput = currentInput.substr(0, currentInput.length() - 1);
+#endif //defined(MOD_CJK_ENABLED)
                 selMode = 1;
 #if !defined(MOD_UART_KEYBOARD_12KEY)
                 selCol = -1;
@@ -1778,7 +1782,7 @@ void InkHUD::InputMenuApplet::handleKeyboardPress()
             selCol = -1;
 #endif //defined(MOD_UART_KEYBOARD_12KEY)
         }
-    #ifdef MOD_CJK_ENABLED
+#if defined(MOD_CJK_ENABLED)
         else if (selKB == 4) {
             if (selMode == 3) {
                 currentInput += currentCIMResults[selResult];
@@ -1898,8 +1902,8 @@ void InkHUD::InputMenuApplet::handleKeyboardPress()
                 }
             }
         }
+#endif //defined(MOD_CJK_ENABLED)
     }
-#endif //MOD_CJK_ENABLED
 }
 
 void InkHUD::InputMenuApplet::sendText(NodeNum dest, ChannelIndex channel, const std::string& message)
