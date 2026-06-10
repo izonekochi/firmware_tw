@@ -29,9 +29,11 @@ class WindowManager
 
     void nextTile();
     void prevTile();
+    bool selectTileAt(uint16_t x, uint16_t y);
     Applet *getActiveApplet();
     void openMenu();
     void openAlignStick();
+    void openAppSwitcher();
     void openKeyboard();
     void closeKeyboard();
     void nextApplet();
@@ -39,6 +41,7 @@ class WindowManager
 #if defined(MOD_INPUT_MENU)
     Tile* getFocusedTile();
 #endif //defined(MOD_INPUT_MENU)
+    bool showApplet(uint8_t appletIndex);
     void rotate();
     void toggleBatteryIcon();
 

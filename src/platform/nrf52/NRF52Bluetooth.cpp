@@ -1,6 +1,7 @@
 #include "NRF52Bluetooth.h"
 #include "BLEDfuSecure.h"
 #include "BluetoothCommon.h"
+#include "HardwareRNG.h"
 #include "PowerFSM.h"
 #include "configuration.h"
 #include "main.h"
@@ -14,8 +15,9 @@ static BLECharacteristic fromRadio = BLECharacteristic(BLEUuid(FROMRADIO_UUID_16
 static BLECharacteristic toRadio = BLECharacteristic(BLEUuid(TORADIO_UUID_16));
 static BLECharacteristic logRadio = BLECharacteristic(BLEUuid(LOGRADIO_UUID_16));
 
-static BLEDis bledis; // DIS (Device Information Service) helper class instance
-static BLEBas blebas; // BAS (Battery Service) helper class instance
+static BLEDis bledis;             // DIS (Device Information Service) helper class instance
+static BLEBas blebas;             // BAS (Battery Service) helper class instance
+static int lastBatteryLevel = -1; // last value written to BAS, to skip redundant writes/notifies
 #ifndef BLE_DFU_SECURE
 static BLEDfu bledfu; // DFU software update helper service
 #else
@@ -272,9 +274,13 @@ void NRF52Bluetooth::setup()
     Bluefruit.setTxPower(NRF52_BLE_TX_POWER);
 #endif
     if (config.bluetooth.mode != meshtastic_Config_BluetoothConfig_PairingMode_NO_PIN) {
-        configuredPasskey = config.bluetooth.mode == meshtastic_Config_BluetoothConfig_PairingMode_FIXED_PIN
-                                ? config.bluetooth.fixed_pin
-                                : random(100000, 999999);
+        if (config.bluetooth.mode == meshtastic_Config_BluetoothConfig_PairingMode_FIXED_PIN) {
+            configuredPasskey = config.bluetooth.fixed_pin;
+        } else {
+            uint32_t hwrand = 0;
+            HardwareRNG::fill(reinterpret_cast<uint8_t *>(&hwrand), sizeof(hwrand));
+            configuredPasskey = hwrand % 900000u + 100000u;
+        }
         auto pinString = std::to_string(configuredPasskey);
         LOG_INFO("Bluetooth pin set to '%i'", configuredPasskey);
         Bluefruit.Security.setPIN(pinString.c_str());
@@ -331,6 +337,7 @@ void NRF52Bluetooth::setup()
     LOG_INFO("Init the Battery Service");
     blebas.begin();
     blebas.write(0); // Unknown battery level for now
+    lastBatteryLevel = 0;
     // Setup the Heart Rate Monitor service using
     // BLEService and BLECharacteristic classes
     LOG_INFO("Init the Mesh bluetooth service");
@@ -350,6 +357,14 @@ void NRF52Bluetooth::resumeAdvertising()
 /// Given a level between 0-100, update the BLE attribute
 void updateBatteryLevel(uint8_t level)
 {
+    if (!nrf52Bluetooth) // skip until the Battery Service has been begun in setup()
+        return;
+
+    if (level > 100) // BAS battery level must stay within 0-100
+        level = 100;
+    if (level == lastBatteryLevel)
+        return;
+    lastBatteryLevel = level;
     blebas.write(level);
 }
 void NRF52Bluetooth::clearBonds()
@@ -381,34 +396,12 @@ bool NRF52Bluetooth::onPairingPasskey(uint16_t conn_handle, uint8_t const passke
     meshtastic::BluetoothStatus newStatus(textkey);
     bluetoothStatus->updateStatus(&newStatus);
 
-#if HAS_SCREEN &&                                                                                                                \
-    !defined(MESHTASTIC_EXCLUDE_SCREEN) // Todo: migrate this display code back into Screen class, and observe bluetoothStatus
+#if HAS_SCREEN && !defined(MESHTASTIC_EXCLUDE_SCREEN)
     if (screen) {
-        screen->startAlert([](OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y) -> void {
-            char btPIN[16] = "888888";
-            snprintf(btPIN, sizeof(btPIN), "%06u", configuredPasskey);
-            int x_offset = display->width() / 2;
-            int y_offset = display->height() <= 80 ? 0 : 12;
-            display->setTextAlignment(TEXT_ALIGN_CENTER);
-            display->setFont(FONT_MEDIUM);
-            display->drawString(x_offset + x, y_offset + y, "Bluetooth");
-
-            display->setFont(FONT_SMALL);
-            y_offset = display->height() == 64 ? y_offset + FONT_HEIGHT_MEDIUM - 4 : y_offset + FONT_HEIGHT_MEDIUM + 5;
-            display->drawString(x_offset + x, y_offset + y, "Enter this code");
-
-            display->setFont(FONT_LARGE);
-            String displayPin(btPIN);
-            String pin = displayPin.substring(0, 3) + " " + displayPin.substring(3, 6);
-            y_offset = display->height() == 64 ? y_offset + FONT_HEIGHT_SMALL - 5 : y_offset + FONT_HEIGHT_SMALL + 5;
-            display->drawString(x_offset + x, y_offset + y, pin);
-
-            display->setFont(FONT_SMALL);
-            String deviceName = "Name: ";
-            deviceName.concat(getDeviceName());
-            y_offset = display->height() == 64 ? y_offset + FONT_HEIGHT_LARGE - 6 : y_offset + FONT_HEIGHT_LARGE + 5;
-            display->drawString(x_offset + x, y_offset + y, deviceName);
-        });
+        std::string configuredPasskeyText = std::to_string(configuredPasskey);
+        std::string ble_message =
+            "Bluetooth\nPIN\n[M]" + configuredPasskeyText.substr(0, 3) + " " + configuredPasskeyText.substr(3, 6);
+        screen->showSimpleBanner(ble_message.c_str(), 30000);
     }
 #endif
     passkeyShowing = true;
