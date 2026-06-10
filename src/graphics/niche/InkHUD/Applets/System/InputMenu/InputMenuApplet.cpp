@@ -1176,10 +1176,10 @@ void InkHUD::InputMenuApplet::handleMenuTKey(const uint8_t modCode, const uint8_
                         sendTargets.clear();
                         for (uint32_t i = 0; i < nodeCount; i++) {
                             meshtastic_NodeInfoLite *node = nodeDB->getMeshNodeByIndex(i);
-                            if (!node->is_favorite)
+                            if (!nodeInfoLiteIsFavorite(node))
                                 continue;
-                            if (node->has_user)
-                                sendTargets.emplace_back(std::string(node->user.long_name), node->num);
+                            if (nodeInfoLiteHasUser(node))
+                                sendTargets.emplace_back(std::string(node->long_name), node->num);
                             else
                                 sendTargets.emplace_back(hexifyNodeNum(node->num), node->num);
                         }
@@ -1719,10 +1719,10 @@ void InkHUD::InputMenuApplet::handleKeyboardPress()
                 uint32_t nodeCount = nodeDB->getNumMeshNodes();
                 for (uint32_t i = 0; i < nodeCount; i++) {
                     meshtastic_NodeInfoLite *node = nodeDB->getMeshNodeByIndex(i);
-                    if (!node->is_favorite)
+                    if (!nodeInfoLiteIsFavorite(node))
                         continue;
-                    if (node->has_user)
-                        sendTargets.emplace_back(std::string(node->user.long_name), node->num);
+                    if (nodeInfoLiteHasUser(node))
+                        sendTargets.emplace_back(std::string(node->long_name), node->num);
                     else
                         sendTargets.emplace_back(hexifyNodeNum(node->num), node->num);
                 }
