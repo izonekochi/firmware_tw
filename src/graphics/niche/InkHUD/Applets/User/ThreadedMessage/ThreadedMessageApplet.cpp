@@ -5,23 +5,39 @@
 #include "RTC.h"
 #include "mesh/NodeDB.h"
 
+#if defined(MOD_INKHUD_TUNES)
+#include "mesh/generated/meshtastic/storeforward.pb.h"
+#endif //defined(MOD_INKHUD_TUNES)
+
 using namespace NicheGraphics;
 
+#if defined(MOD_INKHUD_TUNES)
 #if defined(MOD_INPUT_MENU)
 InkHUD::ThreadedMessageApplet::ThreadedMessageApplet(uint8_t channelIndex)
-    : SinglePortModule("ThreadedMessageApplet", meshtastic_PortNum_TEXT_MESSAGE_APP), channelIndex(channelIndex)
-{
-    Controllable::registerControllable(this, Controllable::Types::ThreadedMessage);
-}
-
-InkHUD::ThreadedMessageApplet::~ThreadedMessageApplet()
-{
-    Controllable::unregisterControllable(this);
-}
+    : Controllable(), MeshModule("ThreadedMessageApplet"), channelIndex(channelIndex)
+#else //!defined(MOD_INPUT_MENU)
+InkHUD::ThreadedMessageApplet::ThreadedMessageApplet(uint8_t channelIndex)
+    : MeshModule("ThreadedMessageApplet"), channelIndex(channelIndex)
+#endif //defined(MOD_INPUT_MENU)
+#else //!defined(MOD_INKHUD_TUNES)
+#if defined(MOD_INPUT_MENU)
+InkHUD::ThreadedMessageApplet::ThreadedMessageApplet(uint8_t channelIndex)
+    : SinglePortModule("ThreadedMessageApplet", meshtastic_PortNum_TEXT_MESSAGE_APP), Controllable(), channelIndex(channelIndex)
 #else //!defined(MOD_INPUT_MENU)
 InkHUD::ThreadedMessageApplet::ThreadedMessageApplet(uint8_t channelIndex)
     : SinglePortModule("ThreadedMessageApplet", meshtastic_PortNum_TEXT_MESSAGE_APP), channelIndex(channelIndex)
+#endif //defined(MOD_INPUT_MENU)
+#endif //defined(MOD_INKHUD_TUNES)
 {
+#if defined(MOD_INPUT_MENU)
+    Controllable::registerControllable(this, Controllable::Types::ThreadedMessage);
+#endif //defined(MOD_INPUT_MENU)
+}
+
+#if defined(MOD_INPUT_MENU)
+InkHUD::ThreadedMessageApplet::~ThreadedMessageApplet()
+{
+    Controllable::unregisterControllable(this);
 }
 #endif //defined(MOD_INPUT_MENU)
 
@@ -72,6 +88,9 @@ void InkHUD::ThreadedMessageApplet::onRender(bool full)
     // Iterate the global store newest-first, showing only broadcast messages on our channel
     const auto &allMessages = messageStore.getLiveMessages();
     int msgIdx = (int)allMessages.size() - 1;
+#if defined(MOD_INPUT_MENU)
+    uint8_t skip = beginMsgIndex; // Scroll offset: skip this many of the newest on-channel messages
+#endif //defined(MOD_INPUT_MENU)
 
     while (msgB >= (0 - fontSmall.lineHeight()) && msgIdx >= 0) {
 
@@ -82,6 +101,15 @@ void InkHUD::ThreadedMessageApplet::onRender(bool full)
             msgIdx--;
             continue;
         }
+
+#if defined(MOD_INPUT_MENU)
+        // Apply the scroll offset: skip the newest `beginMsgIndex` on-channel messages
+        if (skip > 0) {
+            skip--;
+            msgIdx--;
+            continue;
+        }
+#endif //defined(MOD_INPUT_MENU)
 
         // Grab data for message
         bool outgoing = (m.sender == myNodeInfo.my_node_num);
@@ -203,12 +231,43 @@ ProcessMessage InkHUD::ThreadedMessageApplet::handleReceived(const meshtastic_Me
     if (mp.channel != this->channelIndex)
         return ProcessMessage::CONTINUE;
 
+#if defined(MOD_INKHUD_TUNES)
+    if (mp.decoded.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP) {
+        // Abort if message was a DM
+        if (mp.to != NODENUM_BROADCAST)
+            return ProcessMessage::CONTINUE;
+
+        if (mp.decoded.emoji && mp.decoded.reply_id) {
+            // Emoji reaction: append it to the message it replies to (if still in the store)
+            std::string reaction =
+                std::string("←") + std::string((const char *)mp.decoded.payload.bytes, mp.decoded.payload.size);
+            messageStore.appendTextById(mp.decoded.reply_id, reaction);
+        } else {
+            // Normal text broadcast → store in the global messageStore (captures id = mp.id)
+            messageStore.addFromPacket(mp);
+        }
+    } else if (mp.decoded.portnum == meshtastic_PortNum_STORE_FORWARD_APP) {
+        meshtastic_StoreAndForward sf = meshtastic_StoreAndForward_init_zero;
+        if (pb_decode_from_bytes(mp.decoded.payload.bytes, mp.decoded.payload.size, &meshtastic_StoreAndForward_msg, &sf)) {
+            if (sf.which_variant == meshtastic_StoreAndForward_text_tag &&
+                sf.rr == meshtastic_StoreAndForward_RequestResponse_ROUTER_TEXT_BROADCAST) {
+                // Mark an existing copy with an envelope, or store the rebroadcast as a new message
+                if (!messageStore.appendTextById(mp.id, std::string("✉"))) {
+                    std::string text =
+                        std::string((const char *)sf.variant.text.bytes, sf.variant.text.size) + std::string("✉");
+                    messageStore.addBroadcast(mp.id, mp.from, mp.channel, mp.rx_time, text);
+                }
+            }
+        }
+    }
+#else //!defined(MOD_INKHUD_TUNES)
     // Abort if message was a DM
     if (mp.to != NODENUM_BROADCAST)
         return ProcessMessage::CONTINUE;
 
     // Store in the global messageStore — this handles sender, timestamp, channel, text, and ack status
     messageStore.addFromPacket(mp);
+#endif //defined(MOD_INKHUD_TUNES)
 
     // If this was an incoming message, suggest that our applet becomes foreground, if permitted
     if (getFrom(&mp) != nodeDB->getNodeNum())
@@ -232,6 +291,52 @@ bool InkHUD::ThreadedMessageApplet::approveNotification(Notification &n)
     else
         return true;
 }
+
+#if defined(MOD_INKHUD_TUNES)
+bool InkHUD::ThreadedMessageApplet::wantPacket(const meshtastic_MeshPacket *p)
+{
+    if (p->decoded.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP)
+        return true;
+    else if (p->decoded.portnum == meshtastic_PortNum_STORE_FORWARD_APP)
+        return true;
+    return false;
+}
+#endif //defined(MOD_INKHUD_TUNES)
+
+#if defined(MOD_INPUT_MENU)
+bool InkHUD::ThreadedMessageApplet::handleUp()
+{
+    // Count broadcast messages currently stored for our channel
+    uint8_t channelCount = 0;
+    for (const StoredMessage &m : messageStore.getLiveMessages())
+        if (m.type == MessageType::BROADCAST && m.channelIndex == channelIndex)
+            channelCount++;
+
+    if (channelCount > 0 && beginMsgIndex < (uint8_t)(channelCount - 1)) {
+        beginMsgIndex++;
+        requestUpdate(Drivers::EInk::FAST);
+        return true;
+    }
+    return false;
+}
+
+bool InkHUD::ThreadedMessageApplet::handleDown()
+{
+    if (beginMsgIndex > 0) {
+        beginMsgIndex--;
+        requestUpdate(Drivers::EInk::FAST);
+        return true;
+    }
+    return false;
+}
+
+bool InkHUD::ThreadedMessageApplet::handleBack()
+{
+    beginMsgIndex = 0;
+    requestUpdate(Drivers::EInk::FAST);
+    return true;
+}
+#endif //defined(MOD_INPUT_MENU)
 
 // Save messages to flash via the global messageStore.
 // The global store holds messages for all channels; no per-channel file is needed.

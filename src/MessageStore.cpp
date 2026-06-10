@@ -165,6 +165,7 @@ const StoredMessage &MessageStore::addFromPacket(const meshtastic_MeshPacket &pa
 {
     StoredMessage sm;
     assignTimestamp(sm);
+    sm.id = packet.id;
     sm.channelIndex = packet.channel;
 
     const char *payload = reinterpret_cast<const char *>(packet.decoded.payload.bytes);
@@ -217,6 +218,51 @@ void MessageStore::addFromString(uint32_t sender, uint8_t channelIndex, const st
 #if ENABLE_MESSAGE_PERSISTENCE
     markMessageStoreUnsaved();
 #endif
+}
+
+// Append text to the newest message whose id matches (emoji reactions, store-and-forward markers)
+bool MessageStore::appendTextById(uint32_t id, const std::string &suffix)
+{
+    for (auto it = liveMessages.rbegin(); it != liveMessages.rend(); ++it) {
+        if (it->id != id)
+            continue;
+        std::string updated = std::string(getTextFromPool(it->textOffset)) + suffix;
+        size_t len = updated.size();
+        if (len >= MAX_MESSAGE_SIZE)
+            len = MAX_MESSAGE_SIZE - 1;
+        it->textOffset = storeTextInPool(updated.c_str(), updated.size());
+        it->textLength = static_cast<uint16_t>(len);
+#if ENABLE_MESSAGE_PERSISTENCE
+        markMessageStoreUnsaved();
+#endif
+        return true;
+    }
+    return false;
+}
+
+// Add a broadcast message with explicit fields (used for store-and-forward rebroadcasts)
+const StoredMessage &MessageStore::addBroadcast(uint32_t id, uint32_t sender, uint8_t channelIndex, uint32_t timestamp,
+                                                const std::string &text)
+{
+    StoredMessage sm;
+    sm.id = id;
+    sm.timestamp = timestamp;
+    sm.isBootRelative = false;
+    sm.sender = sender;
+    sm.channelIndex = channelIndex;
+    sm.dest = NODENUM_BROADCAST;
+    sm.type = MessageType::BROADCAST;
+    sm.ackStatus = AckStatus::ACKED;
+    size_t len = text.size();
+    if (len >= MAX_MESSAGE_SIZE)
+        len = MAX_MESSAGE_SIZE - 1;
+    sm.textOffset = storeTextInPool(text.c_str(), text.size());
+    sm.textLength = static_cast<uint16_t>(len);
+    addLiveMessage(std::move(sm));
+#if ENABLE_MESSAGE_PERSISTENCE
+    markMessageStoreUnsaved();
+#endif
+    return liveMessages.back();
 }
 
 #if ENABLE_MESSAGE_PERSISTENCE

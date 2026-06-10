@@ -7,9 +7,8 @@ Displays a thread-view of incoming and outgoing message for a specific channel
 The channel for this applet is set in the constructor,
 when the applet is added to WindowManager in the setupNicheGraphics method.
 
-Several messages are saved to flash at shutdown, to preserve applet between reboots.
-This class has its own internal method for saving and loading to fs, which interacts directly with the FSCommon layer.
-If the amount of flash usage is unacceptable, we could keep these in RAM only.
+Messages are stored in the shared global messageStore (see src/MessageStore.h),
+which persists a few recent messages to flash and is loaded once by InkHUD::begin().
 
 Multiple instances of this channel may be used. This must be done at buildtime.
 Suggest a max of two channel, to minimize fs usage?
@@ -34,11 +33,19 @@ namespace NicheGraphics::InkHUD
 
 class Applet;
 
+#if defined(MOD_INKHUD_TUNES)
+#if defined(MOD_INPUT_MENU)
+class ThreadedMessageApplet : public Applet, virtual public Controllable, public MeshModule
+#else //!defined(MOD_INPUT_MENU)
+class ThreadedMessageApplet : public Applet, public MeshModule
+#endif //defined(MOD_INPUT_MENU)
+#else //!defined(MOD_INKHUD_TUNES)
 #if defined(MOD_INPUT_MENU)
 class ThreadedMessageApplet : public Applet, virtual public Controllable, public SinglePortModule
 #else //!defined(MOD_INPUT_MENU)
 class ThreadedMessageApplet : public Applet, public SinglePortModule
 #endif //defined(MOD_INPUT_MENU)
+#endif //defined(MOD_INKHUD_TUNES)
 {
   public:
     explicit ThreadedMessageApplet(uint8_t channelIndex);
@@ -56,8 +63,15 @@ class ThreadedMessageApplet : public Applet, public SinglePortModule
 
     bool approveNotification(Notification &n) override; // Which notifications to suppress
 
+#if defined(MOD_INKHUD_TUNES)
+    bool wantPacket(const meshtastic_MeshPacket *p) override;
+#endif //defined(MOD_INKHUD_TUNES)
+
 #if defined(MOD_INPUT_MENU)
     uint8_t getChannelIndex() const { return channelIndex; }
+    bool handleUp() override;
+    bool handleDown() override;
+    bool handleBack() override;
 #endif //defined(MOD_INPUT_MENU)
 
   protected:
@@ -65,6 +79,10 @@ class ThreadedMessageApplet : public Applet, public SinglePortModule
     void loadMessagesFromFlash();
 
     uint8_t channelIndex = 0;
+
+#if defined(MOD_INPUT_MENU)
+    uint8_t beginMsgIndex = 0; // Scroll offset: number of newest on-channel messages to skip when rendering
+#endif //defined(MOD_INPUT_MENU)
 };
 
 } // namespace NicheGraphics::InkHUD

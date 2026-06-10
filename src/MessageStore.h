@@ -60,6 +60,7 @@ enum class AckStatus : uint8_t {
 };
 
 struct StoredMessage {
+    uint32_t id;          // Packet id of the source message (RAM-only, 0 if unknown / loaded from flash)
     uint32_t timestamp;   // When message was created (secs since boot or RTC)
     uint32_t sender;      // NodeNum of sender
     uint8_t channelIndex; // Channel index used
@@ -74,8 +75,8 @@ struct StoredMessage {
 
     // Default constructor initializes all fields safely
     StoredMessage()
-        : timestamp(0), sender(0), channelIndex(0), dest(0xffffffff), type(MessageType::BROADCAST), isBootRelative(false),
-          ackStatus(AckStatus::NONE), textOffset(0), textLength(0)
+        : id(0), timestamp(0), sender(0), channelIndex(0), dest(0xffffffff), type(MessageType::BROADCAST),
+          isBootRelative(false), ackStatus(AckStatus::NONE), textOffset(0), textLength(0)
     {
     }
 };
@@ -93,6 +94,14 @@ class MessageStore
     // Add new messages from packets or manual input
     const StoredMessage &addFromPacket(const meshtastic_MeshPacket &mp);                // Incoming/outgoing → RAM only
     void addFromString(uint32_t sender, uint8_t channelIndex, const std::string &text); // Manual add
+
+    // Add a broadcast message with explicit fields (used for store-and-forward rebroadcasts)
+    const StoredMessage &addBroadcast(uint32_t id, uint32_t sender, uint8_t channelIndex, uint32_t timestamp,
+                                      const std::string &text);
+
+    // Append text to the newest message whose id matches (emoji reactions, store-and-forward markers).
+    // Returns true if a matching message was found and updated.
+    bool appendTextById(uint32_t id, const std::string &suffix);
 
     // Persistence methods (used only on boot/shutdown)
     void saveToFlash();   // Save messages to flash
