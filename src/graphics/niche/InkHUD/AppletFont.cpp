@@ -35,17 +35,30 @@ InkHUD::AppletFont::AppletFont(const GFXfont &adafruitGFXFont, Encoding encoding
 
     // Scan each glyph in the AdafruitGFX font
     for (uint16_t i = 0; i <= (gfxFont->last - gfxFont->first); i++) {
-        uint8_t glyphHeight = gfxFont->glyph[i].height; // Height of glyph
-        this->height = max(this->height, glyphHeight);  // Store if it's a new max
+        // The CJK font stores glyph metrics palette-indexed (cubicGlyph), not as a GFXglyph[]
+        uint8_t glyphHeight;
+        int8_t glyphYOffset;
+#if defined(MOD_CJK_ENABLED)
+        if (encoding == CJK_UTF8) {
+            CubicGlyphMetrics g = cubicGlyph(i);
+            glyphHeight = g.height;
+            glyphYOffset = g.yOffset;
+        } else
+#endif // defined(MOD_CJK_ENABLED)
+        {
+            glyphHeight = gfxFont->glyph[i].height;
+            glyphYOffset = gfxFont->glyph[i].yOffset;
+        }
+        this->height = max(this->height, glyphHeight); // Store if it's a new max
 
         // Calculate how far the glyph rises the cursor line
         // Store if new max value
         // Caution: signed and unsigned types
-        int8_t glyphAscender = 0 - gfxFont->glyph[i].yOffset;
+        int8_t glyphAscender = 0 - glyphYOffset;
         if (glyphAscender > 0)
             this->ascenderHeight = max(this->ascenderHeight, static_cast<uint8_t>(glyphAscender));
 
-        int8_t glyphDescender = gfxFont->glyph[i].height + gfxFont->glyph[i].yOffset;
+        int8_t glyphDescender = glyphHeight + glyphYOffset;
         if (glyphDescender > 0)
             this->descenderHeight = max(this->descenderHeight, static_cast<uint8_t>(glyphDescender));
     }
@@ -56,7 +69,12 @@ InkHUD::AppletFont::AppletFont(const GFXfont &adafruitGFXFont, Encoding encoding
     descenderHeight += paddingBottom;
 
     // Find how far the cursor advances when we "print" a space character
-    spaceCharWidth = gfxFont->glyph[static_cast<uint8_t>(' ') - gfxFont->first].xAdvance;
+#if defined(MOD_CJK_ENABLED)
+    if (encoding == CJK_UTF8)
+        spaceCharWidth = cubicGlyph(static_cast<uint8_t>(' ') - gfxFont->first).xAdvance;
+    else
+#endif // defined(MOD_CJK_ENABLED)
+        spaceCharWidth = gfxFont->glyph[static_cast<uint8_t>(' ') - gfxFont->first].xAdvance;
 }
 
 /*

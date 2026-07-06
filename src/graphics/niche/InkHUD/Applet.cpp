@@ -292,7 +292,7 @@ uint16_t InkHUD::Applet::Y(float f)
 #if defined(MOD_CJK_ENABLED)
 void InkHUD::Applet::drawCharCJK(int16_t x, int16_t y, uint16_t code, uint16_t color, uint16_t bg, uint8_t size_x, uint8_t size_y)
 {
-    GFXglyph *glyph = gfxFont->glyph + code;
+    CubicGlyphMetrics glyph = cubicGlyph(code);
     uint8_t *bitmap = gfxFont->bitmap;
     for (int i = 0; i < OVERFLOW_TABLE_SIZE && code >= overflowTable[i]; i++) {
         if (i == OVERFLOW_TABLE_SIZE - 1) { // real overflow
@@ -302,9 +302,9 @@ void InkHUD::Applet::drawCharCJK(int16_t x, int16_t y, uint16_t code, uint16_t c
         bitmap += 0x10000;
     }
 
-    uint16_t bo = pgm_read_word(&glyph->bitmapOffset);
-    uint8_t w = pgm_read_byte(&glyph->width), h = pgm_read_byte(&glyph->height);
-    int8_t xo = pgm_read_byte(&glyph->xOffset), yo = pgm_read_byte(&glyph->yOffset);
+    uint16_t bo = glyph.bitmapOffset;
+    uint8_t w = glyph.width, h = glyph.height;
+    int8_t xo = glyph.xOffset, yo = glyph.yOffset;
     uint8_t xx, yy, bits = 0, bit = 0;
     int16_t xo16 = 0, yo16 = 0;
 
@@ -355,17 +355,17 @@ size_t InkHUD::Applet::writeCJK(const uint8_t *buffer, int numChars)
       uint16_t first = pgm_read_word(&gfxFont->first);
       int16_t code = lookup(buffer, numChars);
       if (code > 0 && ((uint16_t)code >= first) && ((uint16_t)code <= pgm_read_word(&gfxFont->last))) {
-        GFXglyph *glyph = gfxFont->glyph + ((uint16_t)code - first);
-        uint8_t w = pgm_read_byte(&glyph->width), h = pgm_read_byte(&glyph->height);
+        CubicGlyphMetrics glyph = cubicGlyph((uint16_t)code - first);
+        uint8_t w = glyph.width, h = glyph.height;
         if ((w > 0) && (h > 0)) { // Is there an associated bitmap?
-          int16_t xo = (int8_t)pgm_read_byte(&glyph->xOffset); // sic
+          int16_t xo = glyph.xOffset; // sic
           if (wrap && ((cursor_x + textsize_x * (xo + w)) > _width)) {
             cursor_x = 0;
             cursor_y += (int16_t)textsize_y * (uint8_t)pgm_read_byte(&gfxFont->yAdvance);
           }
           drawCharCJK(cursor_x, cursor_y, code, textcolor, textbgcolor, textsize_x, textsize_y);
         }
-        cursor_x += (uint8_t)pgm_read_byte(&glyph->xAdvance) * (int16_t)textsize_x;
+        cursor_x += (uint8_t)glyph.xAdvance * (int16_t)textsize_x;
       }
     }
   }
@@ -424,9 +424,9 @@ void InkHUD::Applet::charBoundsCJK(const uint8_t* ptr, const int numChars, int16
       uint16_t first = pgm_read_word(&gfxFont->first);
       int16_t code = lookup(ptr, numChars);
       if (code > 0 && ((uint16_t)code >= first) && ((uint16_t)code <= pgm_read_word(&gfxFont->last))) {
-        GFXglyph *glyph = gfxFont->glyph + (*ptr - first);
-        uint8_t gw = pgm_read_byte(&glyph->width), gh = pgm_read_byte(&glyph->height), xa = pgm_read_byte(&glyph->xAdvance);
-        int8_t xo = pgm_read_byte(&glyph->xOffset), yo = pgm_read_byte(&glyph->yOffset);
+        CubicGlyphMetrics glyph = cubicGlyph((uint16_t)code - first); // was: *ptr (bug) -> use looked-up code
+        uint8_t gw = glyph.width, gh = glyph.height, xa = glyph.xAdvance;
+        int8_t xo = glyph.xOffset, yo = glyph.yOffset;
         if (wrap && ((*x + (((int16_t)xo + gw) * textsize_x)) > _width)) {
           *x = 0; // Reset x to zero, advance y by one line
           *y += textsize_y * (uint8_t)pgm_read_byte(&gfxFont->yAdvance);
