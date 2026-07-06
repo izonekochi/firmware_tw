@@ -549,6 +549,10 @@ int32_t InkHUD::InputMenuApplet::runOnce()
         if (millis() > autoHideMillis)
             touchLocked = true;
 #endif //defined(MOD_UART_KEYBOARD_12KEY_AUTOLOCK)
+        // Combo-tap gesture decoder for the Grove 12-key capacitive pad: its BACK/ENTER keys
+        // send no long-press signal, so single/double/triple taps within a ~350ms-per-press
+        // window are synthesized here into longpress / touch-lock actions. This is a hardware
+        // workaround for that specific touchpad, not a general navigation aid.
         if (comboPressCount > 0) {
             if (millis() - comboStartMillis > comboPressCount * 350) {
                 comboPressCount = 0;
@@ -700,7 +704,10 @@ void InkHUD::InputMenuApplet::handleMenuVKey(const uint8_t code) {
         }
         else if (selMode == 3) { // select result
             if (selResult / 10 <= 0) {
-                selResult = currentCIMResults.size() - currentCIMResults.size() % 10;
+                // Wrap to the first index of the last page. ((size-1)/10)*10 matches the
+                // T-Keyboard path (line ~1038); the old `size - size%10` over-indexed by a
+                // whole page when the candidate count was an exact multiple of 10.
+                selResult = (currentCIMResults.size() - 1) / 10 * 10;
             }
             else {
                 selResult -= 10;
@@ -1487,105 +1494,168 @@ void InkHUD::InputMenuApplet::onRender(bool full)
     }
 }
 
-void InkHUD::InputMenuApplet::onButtonShortPress()
+void InkHUD::InputMenuApplet::noteUserActivity()
 {
 #if defined(MOD_UART_KEYBOARD_12KEY) || defined(MOD_UART_T_KEYBOARD)
     autoHideMillis = millis() + INPUT_TIMEOUT_SEC * 1000UL;
 #else //!(defined(MOD_UART_KEYBOARD_12KEY) || defined(MOD_UART_T_KEYBOARD))
     OSThread::setIntervalFromNow(INPUT_TIMEOUT_SEC * 1000UL);
 #endif //defined(MOD_UART_KEYBOARD_12KEY) || defined(MOD_UART_T_KEYBOARD)
+}
 
+int16_t &InkHUD::InputMenuApplet::currentCursor()
+{
+    switch (selMode) {
+    case 0:
+        return selKB;
+    case 1:
+        return selRow;
+    case 2:
+        return selCol;
+    case 3:
+        return selResult;
+    default: // 0x10 / 0x11
+        return selTarget;
+    }
+}
+
+int16_t InkHUD::InputMenuApplet::currentLevelCount()
+{
+    switch (selMode) {
+    case 0:
+        return (int16_t)keyboards.size();
+    case 1:
+        return (int16_t)std::get<1>(keyboards[selKB]).size();
+    case 2:
+        return (int16_t)std::get<1>(keyboards[selKB])[selRow].size();
+    case 3:
+        return (int16_t)currentCIMResults.size();
+    default: // 0x10 / 0x11
+        return (int16_t)sendTargets.size();
+    }
+}
+
+// Move the active level's cursor by delta (+1/-1), cycling through the same
+// [-1 .. count-1] range the single-button short-press uses (-1 = "nothing selected").
+void InkHUD::InputMenuApplet::cursorStep(int delta)
+{
+    int16_t &cur = currentCursor();
+    const int16_t count = currentLevelCount();
+    cur = (int16_t)(cur + delta);
+    if (cur >= count)
+        cur = -1;
+    else if (cur < -1)
+        cur = (int16_t)(count - 1);
+    requestUpdate(Drivers::EInk::UpdateTypes::FAST);
+}
+
+// Descend one level, or commit at the current cursor.
+// Mirrors the "cursor != -1" branch of the original onButtonLongPress.
+void InkHUD::InputMenuApplet::levelActivate()
+{
     if (selMode == 0) {
-        selKB++;
-        if (selKB == (int16_t)keyboards.size())
-            selKB = -1;
+        selMode = 1;
+        selRow = 0;
     }
     else if (selMode == 1) {
-        selRow++;
-        if (selRow == (int16_t)std::get<1>(keyboards[selKB]).size())
-            selRow = -1;
+        if (std::get<1>(keyboards[selKB])[selRow].size() > 1) {
+            selMode = 2;
+            selCol = 0;
+        }
+        else {
+            selCol = 0;
+            handleKeyboardPress();
+        }
     }
-    else if (selMode == 2) {
-        selCol++;
-        if (selCol == (int16_t)std::get<1>(keyboards[selKB])[selRow].size())
-            selCol = -1;
-    }
-    else if (selMode == 3) {
-        selResult++;
-        if (selResult == (int16_t)currentCIMResults.size())
-            selResult = -1;
-    }
-    else if (selMode == 0x10 || selMode == 0x11) {
-        selTarget++;
-        if (selTarget == (int16_t)sendTargets.size())
-            selTarget = -1;
+    else { // selMode 2, 3, 0x10, 0x11: commit at the cursor
+        handleKeyboardPress();
     }
 
-    requestUpdate(Drivers::EInk::UpdateTypes::FAST);
+    // FAST update unless the action already requested a specialized one
+    if (!wantsToRender())
+        requestUpdate(Drivers::EInk::UpdateTypes::FAST);
+}
+
+// Step up one level, exit at the top, or clear the CIM.
+// Mirrors the "cursor == -1" branch of the original onButtonLongPress.
+void InkHUD::InputMenuApplet::levelBack()
+{
+    if (selMode == 0) {
+        sendToBackground();
+    }
+    else if (selMode == 1) {
+        selMode = 0;
+    }
+    else if (selMode == 2) {
+        selMode = 1;
+    }
+    else if (selMode == 3) {
+        currentCIM.clear();
+        currentCIMKeys.clear();
+        currentCIMResults.clear();
+        selMode = 1;
+    }
+    else { // 0x10 / 0x11
+        selMode = 1;
+    }
+
+    if (!wantsToRender())
+        requestUpdate(Drivers::EInk::UpdateTypes::FAST);
+}
+
+void InkHUD::InputMenuApplet::onButtonShortPress()
+{
+    noteUserActivity();
+    cursorStep(+1); // advance to next item in the current level (single-button cycle)
 }
 
 void InkHUD::InputMenuApplet::onButtonLongPress()
 {
-#if defined(MOD_UART_KEYBOARD_12KEY) || defined(MOD_UART_T_KEYBOARD)
-    autoHideMillis = millis() + INPUT_TIMEOUT_SEC * 1000UL;
-#else //!(defined(MOD_UART_KEYBOARD_12KEY) || defined(MOD_UART_T_KEYBOARD))
-    OSThread::setIntervalFromNow(INPUT_TIMEOUT_SEC * 1000UL);
-#endif //defined(MOD_UART_KEYBOARD_12KEY) || defined(MOD_UART_T_KEYBOARD)
+    noteUserActivity();
+    // -1 sentinel means "nothing selected" -> step back a level; otherwise descend/commit
+    if (currentCursor() == -1)
+        levelBack();
+    else
+        levelActivate();
+}
 
-    if (selMode == 0) {
-        if (selKB == -1)
-            sendToBackground();
-        else {
-            selMode = 1;
-            selRow = 0;
-        }
-    }
-    else if (selMode == 1) {
-        if (selRow == -1)
-            selMode = 0;
-        else {
-            if (std::get<1>(keyboards[selKB])[selRow].size() > 1) {
-                selMode = 2;
-                selCol = 0;
-            }
-            else {
-                selCol = 0;
-                handleKeyboardPress();
-            }
-        }
-    }
-    else if (selMode == 2) {
-        if (selCol == -1)
-            selMode = 1;
-        else {
-            handleKeyboardPress();
-        }
-    }
-    else if (selMode == 3) {
-        if (selResult == -1) {
-            currentCIM.clear();
-            currentCIMKeys.clear();
-            currentCIMResults.clear();
-            selMode = 1;
-        }
-        else {
-            handleKeyboardPress();
-        }
-    }
-    else if (selMode == 0x10 || selMode == 0x11) {
-        if (selTarget == -1) {
-            selMode = 1;
-        }
-        else {
-            handleKeyboardPress();
-        }
-    }
+// --- Directional navigation (joystick / rocker / keyboard arrows) ---
+// Same cursor model as the single button, just with explicit up/down and back/activate.
 
-    // If we didn't already request a specialized update, when handling a menu action,
-    // then perform the usual fast update.
-    // FAST keeps things responsive: important because we're dealing with user input
-    if (!wantsToRender())
-        requestUpdate(Drivers::EInk::UpdateTypes::FAST);
+void InkHUD::InputMenuApplet::onNavUp()
+{
+    noteUserActivity();
+    cursorStep(-1);
+}
+
+void InkHUD::InputMenuApplet::onNavDown()
+{
+    noteUserActivity();
+    cursorStep(+1);
+}
+
+void InkHUD::InputMenuApplet::onNavLeft()
+{
+    noteUserActivity();
+    levelBack();
+}
+
+void InkHUD::InputMenuApplet::onNavRight()
+{
+    noteUserActivity();
+    levelActivate();
+}
+
+void InkHUD::InputMenuApplet::onExitShort()
+{
+    noteUserActivity();
+    levelBack();
+}
+
+void InkHUD::InputMenuApplet::onExitLong()
+{
+    noteUserActivity();
+    sendToBackground();
 }
 
 void InkHUD::InputMenuApplet::handleKeyboardPress()

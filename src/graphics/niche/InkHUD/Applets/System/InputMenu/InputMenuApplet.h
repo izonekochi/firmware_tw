@@ -22,6 +22,14 @@ class InputMenuApplet : public SystemApplet, public concurrency::OSThread {
     void onBackground() override;
     void onButtonShortPress() override;
     void onButtonLongPress() override;
+    // Directional navigation (joystick / rocker / keyboard arrows). InputMenuApplet is the
+    // handleInput consumer while foreground, so Events dispatches these to us automatically.
+    void onNavUp() override;
+    void onNavDown() override;
+    void onNavLeft() override;
+    void onNavRight() override;
+    void onExitShort() override;
+    void onExitLong() override;
     void onRender(bool full) override;
 
     void show(Tile *t, Tile *neighborTile = nullptr); // Open the simple input applet, onto a user tile
@@ -53,6 +61,16 @@ class InputMenuApplet : public SystemApplet, public concurrency::OSThread {
     int32_t runOnce() override;
 
     Controllable* getActiveControllable();
+
+    // Shared directional-navigation core, used by the button FSM, the onNav*/onExit* handlers,
+    // and the UART keyboards. Extracted from onButtonShortPress/onButtonLongPress so the
+    // single-button behavior is preserved exactly.
+    int16_t &currentCursor();    // active selMode's cursor variable (selKB/selRow/selCol/selResult/selTarget)
+    int16_t currentLevelCount(); // number of items in the active selMode's list
+    void cursorStep(int delta);  // move active cursor by +/-1 (button cycle / NavDown/NavUp)
+    void levelActivate();        // descend a level or commit (long-press when cursor != -1 / NavRight)
+    void levelBack();            // step up a level / exit / clear CIM (long-press when cursor == -1 / NavLeft / ExitShort)
+    void noteUserActivity();     // re-arm the auto-hide timeout on any user input
 
 #if defined(MOD_UART_KEYBOARD_12KEY)
     void handleMenuVKey(const uint8_t code);
