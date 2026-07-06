@@ -87,6 +87,9 @@ void Channels::initDefaultLoraConfig()
     loraConfig.tx_power = 0; // default
     loraConfig.channel_num = 0;
 
+#ifdef USERPREFS_LORACONFIG_TX_POWER
+    loraConfig.tx_power = USERPREFS_LORACONFIG_TX_POWER;
+#endif
 #ifdef USERPREFS_LORACONFIG_MODEM_PRESET
     loraConfig.modem_preset = USERPREFS_LORACONFIG_MODEM_PRESET;
 #endif
@@ -399,6 +402,60 @@ bool Channels::isDefaultChannel(ChannelIndex chIndex)
             DisplayFormatters::getModemPresetDisplayName(config.lora.modem_preset, false, config.lora.use_preset);
         // Check if the name is the default derived from the modem preset
         if (strcmp(name, presetName) == 0)
+            return true;
+    }
+    return false;
+}
+
+bool cryptoKeyIsPublic(const CryptoKey &key)
+{
+    if (key.length == 0)
+        return true; // encryption disabled
+    // Match the defaultpsk family ignoring its last byte (getKey() bumps only that byte per 1-byte index).
+    if (key.length == (int)sizeof(defaultpsk) && memcmp(key.bytes, defaultpsk, sizeof(defaultpsk) - 1) == 0)
+        return true;
+    return false;
+}
+
+bool Channels::usesPublicKey(ChannelIndex chIndex)
+{
+    const meshtastic_Channel &ch = getByIndex(chIndex);
+    if (!ch.has_settings || ch.role == meshtastic_Channel_Role_DISABLED)
+        return false;
+
+    const auto &psk = ch.settings.psk;
+    if (psk.size == 0) {
+        // Secondary channels inherit the primary key when unset; primary size==0 means encryption disabled.
+        if (ch.role == meshtastic_Channel_Role_SECONDARY) {
+            // Guard against malformed configs with no PRIMARY channel (primaryIndex could point back to us).
+            if (primaryIndex == chIndex)
+                return true; // fail closed: treat as public
+            return usesPublicKey(primaryIndex);
+        }
+        return true;
+    }
+
+    if (psk.size == 1) {
+        // Short PSK aliases: 0 disables encryption; 1..255 are the public defaultpsk family.
+        return true;
+    }
+
+    return (psk.size == sizeof(defaultpsk) && memcmp(psk.bytes, defaultpsk, sizeof(defaultpsk) - 1) == 0);
+}
+
+bool Channels::isWellKnownChannel(ChannelIndex chIndex)
+{
+    const auto &ch = getByIndex(chIndex);
+    // Absent (unencrypted) or single-byte PSK - all the well-known key indexes
+    if (ch.settings.psk.size > 1)
+        return false;
+
+    const char *name = getName(chIndex);
+    for (int p = _meshtastic_Config_LoRaConfig_ModemPreset_MIN; p <= _meshtastic_Config_LoRaConfig_ModemPreset_MAX; p++) {
+        const char *presetName =
+            DisplayFormatters::getModemPresetDisplayName(static_cast<meshtastic_Config_LoRaConfig_ModemPreset>(p), false, true);
+        // Presets without a display name fall through to "Invalid" - never a match
+        if (strcmp(presetName, "Invalid") != 0 && strcmp(name, presetName) == 0)
             return true;
     }
     return false;
