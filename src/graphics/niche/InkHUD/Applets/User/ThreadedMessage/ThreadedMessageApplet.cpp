@@ -2,7 +2,7 @@
 
 #include "./ThreadedMessageApplet.h"
 
-#include "RTC.h"
+#include "gps/RTC.h"
 #include "mesh/NodeDB.h"
 
 #if defined(MOD_INKHUD_TUNES)
@@ -244,7 +244,8 @@ ProcessMessage InkHUD::ThreadedMessageApplet::handleReceived(const meshtastic_Me
             messageStore.appendTextById(mp.decoded.reply_id, reaction);
         } else {
             // Normal text broadcast → store in the global messageStore (captures id = mp.id)
-            messageStore.addFromPacket(mp);
+            if (!messageStore.tryAddFromPacket(mp))
+                return ProcessMessage::CONTINUE;
         }
     } else if (mp.decoded.portnum == meshtastic_PortNum_STORE_FORWARD_APP) {
         meshtastic_StoreAndForward sf = meshtastic_StoreAndForward_init_zero;
@@ -266,7 +267,8 @@ ProcessMessage InkHUD::ThreadedMessageApplet::handleReceived(const meshtastic_Me
         return ProcessMessage::CONTINUE;
 
     // Store in the global messageStore - this handles sender, timestamp, channel, text, and ack status
-    messageStore.addFromPacket(mp);
+    if (!messageStore.tryAddFromPacket(mp))
+        return ProcessMessage::CONTINUE;
 #endif //defined(MOD_INKHUD_TUNES)
 
     // If this was an incoming message, suggest that our applet becomes foreground, if permitted
@@ -337,13 +339,6 @@ bool InkHUD::ThreadedMessageApplet::handleBack()
     return true;
 }
 #endif //defined(MOD_INPUT_MENU)
-
-// Save messages to flash via the global messageStore.
-// The global store holds messages for all channels; no per-channel file is needed.
-void InkHUD::ThreadedMessageApplet::saveMessagesToFlash()
-{
-    messageStore.saveToFlash();
-}
 
 // Messages are loaded once by InkHUD::begin() before applets start.
 // Nothing to do here at per-applet activation time.

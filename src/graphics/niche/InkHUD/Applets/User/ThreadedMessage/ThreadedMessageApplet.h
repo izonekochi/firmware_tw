@@ -75,7 +75,6 @@ class ThreadedMessageApplet : public Applet, public SinglePortModule
 #endif //defined(MOD_INPUT_MENU)
 
   protected:
-    void saveMessagesToFlash();
     void loadMessagesFromFlash();
 
     uint8_t channelIndex = 0;

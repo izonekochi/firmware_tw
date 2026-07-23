@@ -94,10 +94,8 @@ class MessageStore
     void addLiveMessage(StoredMessage &&msg);
     void addLiveMessage(const StoredMessage &msg); // convenience overload
     const std::deque<StoredMessage> &getLiveMessages() const { return liveMessages; }
-
-    // Add new messages from packets or manual input
-    const StoredMessage &addFromPacket(const meshtastic_MeshPacket &mp);                // Incoming/outgoing → RAM only
-    void addFromString(uint32_t sender, uint8_t channelIndex, const std::string &text); // Manual add
+    // Add new messages from packets. Returns nullptr if the packet is filtered out.
+    const StoredMessage *tryAddFromPacket(const meshtastic_MeshPacket &mp); // Incoming/outgoing -> RAM only
 
     // Add a broadcast message with explicit fields (used for store-and-forward rebroadcasts)
     const StoredMessage &addBroadcast(uint32_t id, uint32_t sender, uint8_t channelIndex, uint32_t timestamp,
@@ -120,13 +118,16 @@ class MessageStore
     void deleteOldestMessageWithPeer(uint32_t peer);
     void deleteAllMessagesInChannel(uint8_t channel);
     void deleteAllMessagesWithPeer(uint32_t peer);
-
+    void deleteAllMessagesFromNode(uint32_t nodeNum);
     // Unified accessor (for UI code, defaults to RAM buffer)
     const std::deque<StoredMessage> &getMessages() const { return liveMessages; }
+    bool hasVisibleMessages() const;
 
     // Helper filters for future use
     std::deque<StoredMessage> getChannelMessages(uint8_t channel) const; // Only broadcast messages on a channel
     std::deque<StoredMessage> getDirectMessages() const;                 // Only direct messages
+    bool shouldStorePacket(const meshtastic_MeshPacket &mp) const;
+    bool isMessageVisible(const StoredMessage &msg) const;
 
     // Upgrade boot-relative timestamps once RTC is valid
     void upgradeBootRelativeTimestamps();
@@ -138,6 +139,7 @@ class MessageStore
     static uint16_t storeText(const char *src, size_t len);
 
   private:
+    bool pruneHiddenMessages();
     std::deque<StoredMessage> liveMessages; // Single in-RAM message buffer (also used for persistence)
     std::string filename;                   // Flash filename for persistence
 };
