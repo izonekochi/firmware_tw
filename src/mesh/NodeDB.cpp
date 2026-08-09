@@ -391,6 +391,7 @@ static_assert(sizeof(meshtastic_User::long_name) > MAX_LONG_NAME_BYTES,
               "wire User.long_name must be wider than the local cap so clampLongName stays in bounds");
 
 meshtastic_Position localPosition = meshtastic_Position_init_default;
+bool localPositionBroadcastHold = false; // see NodeDB.h (NavMap private locate/trace)
 meshtastic_CriticalErrorCode error_code =
     meshtastic_CriticalErrorCode_NONE; // For the error code, only show values from this boot (discard value from flash)
 uint32_t error_address = 0;

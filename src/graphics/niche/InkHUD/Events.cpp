@@ -11,10 +11,17 @@
 #include "sleep.h"
 
 #include "./Applet.h"
+#include "./Applets/User/DMChat/DMChatApplet.h" // dynamic per-peer chat routing (onReceiveTextMessage)
 #include "./SystemApplet.h"
 #include "graphics/niche/Utils/FlashData.h"
 
 using namespace NicheGraphics;
+
+#if defined(T_DECK_MAX)
+// T-Deck Max InkHUD sleep-UX shared screen-awake flag (extern-declared in InkHUD.h).
+// Defaults true: the device boots into stateON, and Events::onScreenPower keeps it in sync thereafter.
+bool inkhudScreenAwake = true;
+#endif
 
 namespace
 {
@@ -25,7 +32,15 @@ constexpr uint32_t TOUCH_MENU_OPEN_TAP_SUPPRESS_MS = 1200;
 inline void noteInkHUDUserInteraction()
 {
     // Keep power state and screen-timeout behavior in sync with InkHUD input activity.
+#if defined(T_DECK_MAX)
+    // Sleep-UX: keyboard/touch/bezel input must never wake the screen from sleep; it may only
+    // re-stamp the 30s ON timer while ALREADY awake (EVENT_INPUT has DARK/LS/NB -> ON transitions
+    // that would otherwise wake it). The gate also covers a stale input during a packet-wake nap.
+    if (inkhudScreenAwake)
+        powerFSM.trigger(EVENT_INPUT);
+#else
     powerFSM.trigger(EVENT_INPUT);
+#endif
 }
 } // namespace
 
@@ -48,6 +63,9 @@ void InkHUD::Events::begin()
 #endif
 #ifdef ARCH_ESP32
     lightSleepObserver.observe(&notifyLightSleep);
+#endif
+#if defined(T_DECK_MAX)
+    screenPowerObserver.observe(&notifyScreenPower);
 #endif
 }
 
@@ -449,6 +467,11 @@ void InkHUD::Events::onFreeTextCancel()
 // Returns 0 to signal that we agree to sleep now
 int InkHUD::Events::beforeDeepSleep(void *unused)
 {
+    // Undo any transient InputMenu tile-split before we persist settings, so a shutdown mid-split doesn't save the
+    // temporary 2-tile count as the user's layout. Idempotent (no-op unless a split is active); tiles are still
+    // alive here, so the merge is safe.
+    inkhud->restoreFromMenuSplit();
+
     // If a previous display update is in progress, wait for it to complete.
     inkhud->awaitUpdate();
 
@@ -497,6 +520,8 @@ void InkHUD::Events::applyingChanges()
 // Makes sure we don't lose message history / InkHUD config
 int InkHUD::Events::beforeReboot(void *unused)
 {
+    // Undo any transient InputMenu tile-split before persisting settings (see beforeDeepSleep). Idempotent.
+    inkhud->restoreFromMenuSplit();
 
     // Notify all applets that we're "shutting down"
     // They don't need to know that it's really a reboot
@@ -547,6 +572,10 @@ int InkHUD::Events::onReceiveTextMessage(const meshtastic_MeshPacket *packet)
         if (!stored)
             return 0;
         inkhud->persistence->latestMessage.dm = *stored;
+        // Dynamic per-peer chat windows: bind/claim a DMChat slot for this sender and bring it
+        // on screen. Central routing here (not per-applet observers) so a NEW peer can claim a
+        // slot even while that slot's applet is inactive. No-op when no slots are registered.
+        DMChatApplet::onIncomingDM(stored->sender);
     } else {
         // Broadcasts are added to the global store by ThreadedMessageApplet::handleReceived().
         // Here we only update the latestMessage cache used by AllMessageApplet / NotificationApplet.
@@ -591,6 +620,44 @@ int InkHUD::Events::beforeLightSleep(void *unused)
 {
     inkhud->awaitUpdate();
     return 0; // No special status to report. Ignored anyway by this Observable
+}
+#endif
+
+#if defined(T_DECK_MAX)
+// Callback for screenPowerObserver (fired from PowerFSM via notifyScreenPower).
+// awake==true : PowerFSM entered stateON/statePOWER (the device woke). Mark awake and force a full
+//               re-render so the "asleep" indicator is cleared.
+// awake==false: the screen_on_secs timer expired (ON/POWER -> DARK) and light sleep is imminent.
+//               Mark asleep and SYNCHRONOUSLY (async=false) refresh so the "asleep" indicator is
+//               stamped on the panel before we sleep.
+int InkHUD::Events::onScreenPower(bool awake)
+{
+    // Edge-triggered only. stateON's onEnter notifies on every re-entry (each keystroke/bezel
+    // press is an EVENT_INPUT ON->ON self-transition), and the wake render below is a forced
+    // full-buffer FAST refresh - without this guard every key press would flash the panel and
+    // burn FAST-refresh debt toward an unwanted mid-typing FULL flash.
+    if (awake == inkhudScreenAwake)
+        return 0;
+
+    inkhudScreenAwake = awake;
+
+    if (awake) {
+        // Force a full re-render (all=true) so the persistent framebuffer is cleared and the current
+        // applet is fully redrawn - this erases the "asleep" moon glyph that BatteryIconApplet
+        // stamped into its top-right corner tile before sleep, and repaints the battery there
+        // (if enabled). Async is fine here: waking is not time-critical.
+        inkhud->forceUpdate(Drivers::EInk::UpdateTypes::FAST, true, true);
+    } else {
+        // Settling to sleep: stamp the "asleep" indicator SYNCHRONOUSLY (async=false) so it lands on
+        // the panel before the imminent light sleep. In silent mode this is the LAST render until
+        // the next wake (the InkHUD facade drops all asleep-time updates), so it must bypass the
+        // gate - it is the render that puts the silent-moon + lock on the panel.
+        inkhud->silentStampBypass = true;
+        inkhud->forceUpdate(Drivers::EInk::UpdateTypes::FAST, false, false);
+        inkhud->silentStampBypass = false;
+    }
+
+    return 0; // Tell caller to continue notifying other observers
 }
 #endif
 

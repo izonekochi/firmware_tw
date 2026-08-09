@@ -34,7 +34,12 @@ void PowerFSM_setup(){};
 static bool isPowered()
 {
 // Circumvent the battery sensing logic and assumes constant power if no battery pin or power mgmt IC
-#if !defined(BATTERY_PIN) && !defined(HAS_AXP192) && !defined(HAS_AXP2101) && !defined(NRF_APM)
+// T_DECK_MAX opts out of this shortcut: it has no BATTERY_PIN/AXP but DOES have real VBUS+battery
+// sensing (SY6970 via HAS_PPM -> powerStatus). The assume-powered shortcut parked its FSM in
+// statePOWER even on battery, where the T_DECK_MAX EVENT_IDLE_TO_SLEEP transition (quick sleep +
+// power-button sleep, defined from stateON only) was silently ignored - the device only ever slept
+// via the screen_on_secs POWER->DARK timeout. Falling through computes the honest answer below.
+#if !defined(BATTERY_PIN) && !defined(HAS_AXP192) && !defined(HAS_AXP2101) && !defined(NRF_APM) && !defined(T_DECK_MAX)
     return true;
 #endif
 
@@ -183,6 +188,15 @@ static void lsIdle()
 #endif
                 if (pressed) { // If we woke because of press, instead generate a PRESS event.
                     powerFSM.trigger(EVENT_PRESS);
+#if defined(HELTEC_V3)
+                } else if (digitalRead(LORA_DIO1)) {
+                    LOG_INFO("Wakeup by LoRa DIO1");
+                    powerFSM.trigger(EVENT_PACKET_FOR_PHONE);
+#elif defined(CDEBYTE_EORA_HUB_E80)
+                } else if (digitalRead(LORA_DIO9)) {
+                    LOG_INFO("Wakeup by LoRa DIO9");
+                    powerFSM.trigger(EVENT_PACKET_FOR_PHONE);
+#endif //defined(HELTEC_V3)
                 } else {
                     // Otherwise let the NB state handle the IRQ (and that state will handle stuff like IRQs etc)
                     // we lie and say "wake timer" because the interrupt will be handled by the regular IRQ code
@@ -264,6 +278,11 @@ static void powerEnter()
         if (screen)
             screen->setOn(true);
         setBluetoothEnable(true);
+#if defined(T_DECK_MAX)
+        // T-Deck Max InkHUD sleep-UX: the screen is now awake in the powered state too (e.g. USB
+        // connected while asleep). Mirror stateON's wake notification so the "asleep" indicator clears.
+        notifyScreenPower.notifyObservers(true);
+#endif
         // within enter() the function getState() returns the state we came from
     }
 }
@@ -290,7 +309,32 @@ static void onEnter()
     if (screen)
         screen->setOn(true);
     setBluetoothEnable(true);
+#if defined(T_DECK_MAX)
+    // T-Deck Max InkHUD sleep-UX: the device screen is now awake. (On InkHUD builds `screen` is
+    // nullptr, so this Observable is the only clean wake edge.)
+    notifyScreenPower.notifyObservers(true);
+    // Quick sleep: onEnter re-runs on every ON re-entry, including the EVENT_INPUT/EVENT_PRESS
+    // ON->ON self-transitions, so this single stamp tracks "last user activity" for the idle
+    // watchdog (see TDeckMaxIdleSleepThread in extra_variants/t_deck_max/variant.cpp).
+    tdeckMaxLastWakeActivityMs = millis();
+#endif
 }
+
+#if defined(T_DECK_MAX)
+// T-Deck Max InkHUD sleep-UX: on_transition callback for the ON/POWER -> DARK "Screen-on timeout".
+// Fires exactly once when the screen_on_secs timer expires (settling to sleep), NOT on the
+// frequent packet-wake naps. Lets InkHUD stamp the "asleep" indicator before the imminent sleep.
+static void onScreenTimeout()
+{
+    // Interactive-nap window: within TDECKMAX_INTERACTIVE_*_MS of a BOOT wake / keystroke the
+    // screen stays logically ON while the CPU naps (no moon, input processed, keyboard armed as
+    // a wake source in doLightSleep). The idle watchdog stamps the indicator - and closes the
+    // window - once it lapses (TDeckMaxIdleSleepThread in extra_variants/t_deck_max/variant.cpp).
+    if ((int32_t)(tdeckMaxKbWakeUntilMs - millis()) > 0)
+        return;
+    notifyScreenPower.notifyObservers(false);
+}
+#endif
 
 static void onIdle()
 {
@@ -420,13 +464,32 @@ void PowerFSM_setup()
     if (config.display.screen_on_secs > 0)
 #endif
     {
+#if defined(T_DECK_MAX)
+        // T-Deck Max InkHUD sleep-UX: notify observers on the settle-to-sleep edge (see onScreenTimeout).
+        void (*screenTimeoutCb)() = onScreenTimeout;
+#else
+        void (*screenTimeoutCb)() = NULL;
+#endif
         powerFSM.add_timed_transition(&stateON, &stateDARK,
                                       Default::getConfiguredOrDefaultMs(config.display.screen_on_secs, default_screen_on_secs),
-                                      NULL, "Screen-on timeout");
+                                      screenTimeoutCb, "Screen-on timeout");
         powerFSM.add_timed_transition(&statePOWER, &stateDARK,
                                       Default::getConfiguredOrDefaultMs(config.display.screen_on_secs, default_screen_on_secs),
-                                      NULL, "Screen-on timeout");
+                                      screenTimeoutCb, "Screen-on timeout");
     }
+
+#if defined(T_DECK_MAX)
+    // Quick sleep: the idle watchdog fires this when the device has been idle in stateON (no
+    // input, no pending display update, no system applet focused), cutting the screen_on_secs
+    // dwell short. Reuses the onScreenTimeout callback so the "asleep" indicator path is
+    // identical to the natural timeout; the existing 0ms DARK->LS timed transition (BLE off)
+    // then drops straight into light sleep. Also defined from statePOWER: with VBUS present the
+    // FSM lives there (onIdle promotes ON->POWER), which silently ate a deliberate BOOT sleep
+    // press - the USB serial hold already promises "a deliberate power-button sleep still works"
+    // (it stops re-stamping once asleep). Ignored everywhere else (SERIAL, DARK, LS).
+    powerFSM.add_transition(&stateON, &stateDARK, EVENT_IDLE_TO_SLEEP, onScreenTimeout, "Idle quick sleep");
+    powerFSM.add_transition(&statePOWER, &stateDARK, EVENT_IDLE_TO_SLEEP, onScreenTimeout, "Idle quick sleep");
+#endif
 
 // We never enter light-sleep or NB states on NRF52 (because the CPU uses so little power normally)
 #ifdef ARCH_ESP32

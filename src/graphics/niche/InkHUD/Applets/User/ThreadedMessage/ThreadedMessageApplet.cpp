@@ -271,12 +271,27 @@ ProcessMessage InkHUD::ThreadedMessageApplet::handleReceived(const meshtastic_Me
         return ProcessMessage::CONTINUE;
 #endif //defined(MOD_INKHUD_TUNES)
 
+#if defined(T_DECK_MAX)
+    // Sleep-UX: while awake, behave exactly as upstream (autoshow for incoming + FAST). While asleep,
+    // don't switch applets (pocketed) and only refresh if THIS applet is currently displayed - and
+    // then synchronously (async=false) so it's on-screen before the imminent re-sleep.
+    if (inkhudScreenAwake) {
+        if (getFrom(&mp) != nodeDB->getNodeNum())
+            requestAutoshow();
+        requestUpdate(Drivers::EInk::UpdateTypes::FAST);
+    } else if (isForeground()) {
+        inkhud->forceUpdate(Drivers::EInk::UpdateTypes::FAST, false, false);
+    }
+#else
     // If this was an incoming message, suggest that our applet becomes foreground, if permitted
     if (getFrom(&mp) != nodeDB->getNodeNum())
         requestAutoshow();
 
-    // Redraw the applet, perhaps.
-    requestUpdate(); // Want to update display, if applet is foreground
+    // Redraw the applet, perhaps. FAST explicitly (not UNSPECIFIED): an incoming message must never be promoted to a
+    // full-screen flash by accrued fast-refresh debt (e.g. from NavMap panning on a co-foreground tile). DisplayHealth
+    // still heals ghosting with an unprovoked FULL during idle once debt is high; it just no longer does it on receipt.
+    requestUpdate(Drivers::EInk::UpdateTypes::FAST);
+#endif
 
     // Tell Module API to continue informing other firmware components about this message
     // We're not the only component which is interested in new text messages

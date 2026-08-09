@@ -399,6 +399,13 @@ void InkHUD::InkHUD::openMenu()
     windowManager->openMenu();
 }
 
+#if defined(MOD_INPUT_MENU)
+void InkHUD::InkHUD::openInputMenu()
+{
+    windowManager->openInputMenu();
+}
+#endif
+
 // Show touch-friendly app switcher (on the focused tile)
 void InkHUD::InkHUD::openAppSwitcher()
 {
@@ -421,6 +428,18 @@ void InkHUD::InkHUD::openKeyboard()
 void InkHUD::InkHUD::closeKeyboard()
 {
     windowManager->closeKeyboard();
+}
+
+// Merge the transient InputMenu 1->2 tile split back to the real layout once the menu closes
+void InkHUD::InkHUD::restoreFromMenuSplit()
+{
+    windowManager->restoreFromMenuSplit();
+}
+
+// Is a transient InputMenu 1->2 tile split currently in effect?
+bool InkHUD::InkHUD::isMenuSplitActive()
+{
+    return windowManager->isMenuSplitActive();
 }
 
 // In layouts where multiple applets are shown at once, change which tile is focused
@@ -454,6 +473,13 @@ void InkHUD::InkHUD::rotate()
 }
 
 // rotate the joystick in 90 degree increments
+void InkHUD::InkHUD::toggleJoystick()
+{
+    persistence->settings.joystick.enabled = !persistence->settings.joystick.enabled;
+    persistence->saveSettings();
+}
+
+// rotate the joystick in 90 degree increments
 void InkHUD::InkHUD::rotateJoystick(uint8_t angle)
 {
     persistence->settings.joystick.alignment += angle;
@@ -472,8 +498,26 @@ void InkHUD::InkHUD::toggleBatteryIcon()
 // This allows multiple applets to observe the same event, and then share the same opportunity to update
 // Applets should requestUpdate, whether or not they are currently displayed ("foreground")
 // This is because they *might* be automatically brought to foreground by WindowManager::autoshow
+#if defined(T_DECK_MAX)
+// Silent mode (variant.h): while asleep, the e-ink must not refresh AT ALL - messages are only
+// recorded (MessageStore runs independently of rendering) and appear on the next BOOT wake.
+// This is the single choke point every update request funnels through, so autoshow repaints,
+// chat sync-updates and the Info page's periodic refresh are all covered. The one legitimate
+// asleep render - the indicator stamp on the awake->asleep edge (Events::onScreenPower) - opts
+// out via silentStampBypass, so the moon/lock cluster still lands on the panel before sleep.
+extern bool tdeckmaxSilentMode;
+static inline bool silentModeSuppressed()
+{
+    return tdeckmaxSilentMode && !inkhudScreenAwake;
+}
+#endif
+
 void InkHUD::InkHUD::requestUpdate()
 {
+#if defined(T_DECK_MAX)
+    if (silentModeSuppressed())
+        return;
+#endif
     renderer->requestUpdate();
 }
 
@@ -485,6 +529,10 @@ void InkHUD::InkHUD::requestUpdate()
 // If the async parameter is false, code flow is blocked while the update takes place
 void InkHUD::InkHUD::forceUpdate(EInk::UpdateTypes type, bool all, bool async)
 {
+#if defined(T_DECK_MAX)
+    if (silentModeSuppressed() && !silentStampBypass)
+        return;
+#endif
     renderer->forceUpdate(type, all, async);
 }
 
@@ -492,6 +540,12 @@ void InkHUD::InkHUD::forceUpdate(EInk::UpdateTypes type, bool all, bool async)
 void InkHUD::InkHUD::awaitUpdate()
 {
     renderer->awaitUpdate();
+}
+
+// Is a display update queued (requested / forced, not yet rendered) or currently running?
+bool InkHUD::InkHUD::updatePending()
+{
+    return renderer->updatePending();
 }
 
 // Ask the window manager to potentially bring a different user applet to foreground

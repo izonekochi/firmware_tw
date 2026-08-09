@@ -101,6 +101,10 @@ class MessageStore
     const StoredMessage &addBroadcast(uint32_t id, uint32_t sender, uint8_t channelIndex, uint32_t timestamp,
                                       const std::string &text);
 
+    // Inject a locally-generated DM-thread entry attributed to `sender` (traceroute results etc.);
+    // timestamp assigned internally (RTC or boot-relative)
+    const StoredMessage &addDirect(uint32_t sender, uint32_t dest, const std::string &text);
+
     // Append text to the newest message whose id matches (emoji reactions, store-and-forward markers).
     // Returns true if a matching message was found and updated.
     bool appendTextById(uint32_t id, const std::string &suffix);

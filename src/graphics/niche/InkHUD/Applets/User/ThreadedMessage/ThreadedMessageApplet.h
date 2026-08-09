@@ -55,6 +55,7 @@ class ThreadedMessageApplet : public Applet, public SinglePortModule
 #endif //defined(MOD_INPUT_MENU)
 
     void onRender(bool full) override;
+    ThreadedMessageApplet *asThreadedMessageApplet() override { return this; } // storage-duty discovery (UniChatApplet)
 
     void onActivate() override;
     void onDeactivate() override;
@@ -67,8 +68,9 @@ class ThreadedMessageApplet : public Applet, public SinglePortModule
     bool wantPacket(const meshtastic_MeshPacket *p) override;
 #endif //defined(MOD_INKHUD_TUNES)
 
-#if defined(MOD_INPUT_MENU)
     uint8_t getChannelIndex() const { return channelIndex; }
+
+#if defined(MOD_INPUT_MENU)
     bool handleUp() override;
     bool handleDown() override;
     bool handleBack() override;

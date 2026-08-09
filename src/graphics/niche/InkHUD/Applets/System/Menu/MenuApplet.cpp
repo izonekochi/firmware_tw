@@ -13,6 +13,12 @@
 #include "airtime.h"
 #include "gps/RTC.h"
 #include "graphics/niche/InkHUD/Applets/Bases/Map/MapApplet.h"
+#include "graphics/niche/InkHUD/Applets/User/DMChat/DMChatApplet.h"
+#include "graphics/niche/InkHUD/Applets/User/Heard/HeardApplet.h"
+#include "graphics/niche/InkHUD/Applets/User/UniChat/UniChatApplet.h"
+#if !MESHTASTIC_EXCLUDE_TRACEROUTE
+#include "modules/TraceRouteModule.h" // DM/Heard menu "Traceroute" (results land in the DM chat)
+#endif
 #include "graphics/niche/Utils/FlashData.h"
 #include "main.h"
 #include "mesh/generated/meshtastic/deviceonly.pb.h"
@@ -52,6 +58,20 @@ static constexpr UInt32Option POSITION_BROADCAST_OPTIONS[] = {
     {60 * 60, "1 hr"},       {2 * 60 * 60, "2 hr"},   {3 * 60 * 60, "3 hr"},   {4 * 60 * 60, "4 hr"},
     {5 * 60 * 60, "5 hr"},   {6 * 60 * 60, "6 hr"},   {12 * 60 * 60, "12 hr"}, {18 * 60 * 60, "18 hr"},
     {24 * 60 * 60, "24 hr"}, {36 * 60 * 60, "36 hr"}, {48 * 60 * 60, "48 hr"}, {72 * 60 * 60, "72 hr"},
+};
+
+// Shared by the device- and power-telemetry interval pickers. 0 = firmware default
+// (default_telemetry_broadcast_interval_secs, scaled by online-node count like all telemetry).
+static constexpr UInt32Option TELEMETRY_INTERVAL_OPTIONS[] = {
+    {0, "Default"},        {15 * 60, "15 min"},   {30 * 60, "30 min"},     {60 * 60, "1 hr"},
+    {2 * 60 * 60, "2 hr"}, {6 * 60 * 60, "6 hr"}, {12 * 60 * 60, "12 hr"}, {24 * 60 * 60, "24 hr"},
+};
+
+// NodeInfo broadcast cadence. 0 = firmware default (default_node_info_broadcast_secs, 3h);
+// nothing below 1h is offered (min_node_info_broadcast_secs floor for regular broadcasts).
+static constexpr UInt32Option NODEINFO_INTERVAL_OPTIONS[] = {
+    {0, "Default"},        {60 * 60, "1 hr"},      {2 * 60 * 60, "2 hr"},   {3 * 60 * 60, "3 hr"},
+    {6 * 60 * 60, "6 hr"}, {12 * 60 * 60, "12 hr"}, {24 * 60 * 60, "24 hr"},
 };
 
 static constexpr UInt32Option GPS_UPDATE_INTERVAL_OPTIONS[] = {
@@ -174,6 +194,90 @@ void saveT5BacklightKeepOn(bool keepOn)
 } // namespace
 #endif
 
+#if defined(T_DECK_MAX)
+// One FlashData struct holding all three persisted T-Deck Max hardware toggles. Mirrors the
+// T5 backlight precedent above: kept out of the protobufs, saved under "tdeckmax_hw". Loaded
+// (and applied to the hardware via the variant hooks) in the MenuApplet constructor, then
+// re-saved on each user toggle.
+namespace
+{
+static constexpr uint32_t TDECKMAX_PREFS_VERSION = 5; // v5: added silentMode (v4: vibraMode)
+
+struct TDeckMaxPrefs {
+    uint32_t version = TDECKMAX_PREFS_VERSION;
+    bool extAntenna = false;   // false = internal antenna (XL9555 P04 HIGH)
+    uint8_t frontlight = 0;    // GPIO41 PWM level: 0 / 64 / 128 / 255
+    bool touchEnabled = false; // unused since the CST328 was retired to reset (kept for layout)
+    bool quickSleep = true;    // idle -> immediate light sleep (default ON, user decision)
+    bool cpuFast = false;      // false = 80MHz (default); true = 240MHz race-to-sleep experiment
+    bool rxSniffEco = false;   // false = minSymbols 8 (upstream); true = 4 (longer radio sleeps)
+    uint8_t vibraMode = 0;     // 0 = buzz on all messages, 1 = DMs only, 2 = off (tdeckmaxVibraMode)
+    bool silentMode = false;   // true = no e-ink refresh at all while asleep (tdeckmaxSilentMode)
+};
+
+TDeckMaxPrefs tdeckMaxPrefs;
+bool tdeckMaxPrefsLoaded = false;
+
+void loadTDeckMaxPrefs()
+{
+    if (!tdeckMaxPrefsLoaded) {
+        TDeckMaxPrefs loaded;
+        const bool ok = FlashData<TDeckMaxPrefs>::load(&loaded, "tdeckmax_hw");
+        if (ok && loaded.version == TDECKMAX_PREFS_VERSION) {
+            tdeckMaxPrefs = loaded;
+        }
+        tdeckMaxPrefsLoaded = true;
+    }
+}
+
+void saveTDeckMaxPrefs()
+{
+    tdeckMaxPrefs.version = TDECKMAX_PREFS_VERSION;
+    FlashData<TDeckMaxPrefs>::save(&tdeckMaxPrefs, "tdeckmax_hw");
+}
+
+// Frontlight cycle: Off -> Low -> Med -> High -> Off
+static constexpr uint8_t TDECKMAX_FRONTLIGHT_LEVELS[] = {0, 64, 128, 255};
+
+uint8_t nextFrontlightLevel(uint8_t current)
+{
+    constexpr uint8_t count = sizeof(TDECKMAX_FRONTLIGHT_LEVELS) / sizeof(TDECKMAX_FRONTLIGHT_LEVELS[0]);
+    for (uint8_t i = 0; i < count; i++) {
+        if (TDECKMAX_FRONTLIGHT_LEVELS[i] == current)
+            return TDECKMAX_FRONTLIGHT_LEVELS[(i + 1) % count];
+    }
+    return TDECKMAX_FRONTLIGHT_LEVELS[0];
+}
+
+const char *vibraModeLabel(uint8_t mode)
+{
+    switch (mode) {
+    default:
+    case 0:
+        return "Vibration: All";
+    case 1:
+        return "Vibration: DMs";
+    case 2:
+        return "Vibration: Off";
+    }
+}
+
+const char *frontlightLabel(uint8_t level)
+{
+    switch (level) {
+    case 0:
+        return "Frontlight: Off";
+    case 64:
+        return "Frontlight: Low";
+    case 128:
+        return "Frontlight: Med";
+    default:
+        return "Frontlight: High";
+    }
+}
+} // namespace
+#endif
+
 InkHUD::MenuApplet::MenuApplet() : concurrency::OSThread("MenuApplet")
 {
     // No timer tasks at boot
@@ -194,7 +298,73 @@ InkHUD::MenuApplet::MenuApplet() : concurrency::OSThread("MenuApplet")
     // - handles loading & parsing the canned messages
     // - handles setting / getting of canned messages via apps (Client API Admin Messages)
     cm.store = CannedMessageStore::getInstance();
+
+#if defined(T_DECK_MAX)
+    // Apply the persisted T-Deck Max hardware toggles at boot. This constructor runs during
+    // InkHUD setup (WindowManager::addSystemApplet), early enough to select the LoRa antenna
+    // mux and restore the frontlight before the device is in normal use. (earlyInitVariant
+    // defaulted antenna=internal / frontlight=off / touch=off; here we correct from flash.)
+    loadTDeckMaxPrefs();
+    tdeckmaxSetAntennaExternal(tdeckMaxPrefs.extAntenna);
+    tdeckmaxSetFrontlight(tdeckMaxPrefs.frontlight);
+    tdeckmaxSetTouchEnabled(tdeckMaxPrefs.touchEnabled);
+    tdeckmaxSetQuickSleep(tdeckMaxPrefs.quickSleep);
+    // CPU freq: record-only at boot (NO mid-setup clock switch - a 240MHz flip right before the
+    // first synchronous e-ink render is the prime suspect for the 2026-08-09 boot loop); the
+    // idle watchdog's one-shot re-assert applies it a few seconds after setup() completes.
+    tdeckmaxSetCpuFastBootPref(tdeckMaxPrefs.cpuFast);
+    sx126xRxMinSymbols = tdeckMaxPrefs.rxSniffEco ? 4 : 8; // RX duty-cycle sniff depth experiment
+    tdeckmaxVibraMode = tdeckMaxPrefs.vibraMode;            // buzz policy: all / DMs only / off
+    tdeckmaxSilentMode = tdeckMaxPrefs.silentMode;          // no asleep e-ink refresh (survives reboot)
+#endif
 }
+
+#if defined(T_DECK_MAX)
+// Antenna fast-toggle, shared by the TOGGLE_ANTENNA menu item and the alt+A background chord
+// (InputMenuApplet). The pref struct and its save helper are file-local to this translation
+// unit, so the chord routes through here. tdmExtAntenna keeps the Hardware-page checkbox honest
+// if the page is later (re)populated.
+bool InkHUD::MenuApplet::quickToggleAntenna()
+{
+    tdeckMaxPrefs.extAntenna = !tdeckMaxPrefs.extAntenna;
+    tdeckmaxSetAntennaExternal(tdeckMaxPrefs.extAntenna);
+    saveTDeckMaxPrefs();
+    tdmExtAntenna = tdeckMaxPrefs.extAntenna;
+    return tdeckMaxPrefs.extAntenna;
+}
+
+// Frontlight fast-cycle (alt+B chord / Fn-board "FL"): Off -> Low -> Med -> High -> Off,
+// same pref + persistence as the Hardware-page item.
+uint8_t InkHUD::MenuApplet::quickCycleFrontlight()
+{
+    tdeckMaxPrefs.frontlight = nextFrontlightLevel(tdeckMaxPrefs.frontlight);
+    tdeckmaxSetFrontlight(tdeckMaxPrefs.frontlight);
+    saveTDeckMaxPrefs();
+    return tdeckMaxPrefs.frontlight;
+}
+
+// Vibration policy fast-cycle (alt+V chord / Fn-board "Vib"): All -> DMs only -> Off -> All.
+// tdeckmaxVibraMode is the live gate read by ExternalNotificationModule.
+uint8_t InkHUD::MenuApplet::quickCycleVibra()
+{
+    tdeckMaxPrefs.vibraMode = (tdeckMaxPrefs.vibraMode + 1) % 3;
+    tdeckmaxVibraMode = tdeckMaxPrefs.vibraMode;
+    saveTDeckMaxPrefs();
+    return tdeckMaxPrefs.vibraMode;
+}
+
+// Silent mode toggle (alt+S chord / Hardware page): super power saving - while asleep the
+// e-ink never refreshes (InkHUD facade drops all update requests); messages are only recorded.
+// Persisted so a field reboot/brownout cannot silently revert the power saving. Indicator = moon.
+bool InkHUD::MenuApplet::quickToggleSilent()
+{
+    tdeckMaxPrefs.silentMode = !tdeckMaxPrefs.silentMode;
+    tdeckmaxSilentMode = tdeckMaxPrefs.silentMode;
+    saveTDeckMaxPrefs();
+    LOG_INFO("T-Deck Max silent mode -> %s", tdeckmaxSilentMode ? "on" : "off");
+    return tdeckMaxPrefs.silentMode;
+}
+#endif
 
 void InkHUD::MenuApplet::onForeground()
 {
@@ -270,9 +440,29 @@ void InkHUD::MenuApplet::onBackground()
     t->assignApplet(borrowedTileOwner); // Break our link with the tile, (and relink it with real owner, if it had one)
     borrowedTileOwner = nullptr;
 
+    // Deferred applet swap: now that the real owner is restored, put
+    // the requested user applet on the tile instead - same swap the autoshow path performs.
+    if (showAppletAfterClose) {
+        Applet *target = showAppletAfterClose;
+        showAppletAfterClose = nullptr;
+        if (t->getAssignedApplet())
+            t->getAssignedApplet()->sendToBackground();
+        t->assignApplet(target);
+        target->bringToForeground();
+    }
+
     // Need to force an update, as a polite request wouldn't be honored, seeing how we are now in the background
     // We're only updating here to upgrade from UNSPECIFIED to FAST, to ensure responsiveness when exiting menu
     inkhud->forceUpdate(EInk::UpdateTypes::FAST);
+
+#if defined(MOD_INPUT_MENU)
+    // Deferred hand-off to the IME (MENU_OPEN_INPUT): the tile owner is restored above, so the
+    // IME can now borrow it cleanly and drive it ("Search Node" / "Search Place" / "Reply"...).
+    if (openInputAfterClose) {
+        openInputAfterClose = false;
+        inkhud->openInputMenu();
+    }
+#endif
 }
 
 // Open the menu
@@ -454,6 +644,19 @@ static void applyTimezone(const char *tz)
     service->reloadConfig(SEGMENT_CONFIG);
 }
 
+// See MenuApplet.h: header-aware cursor -> option-table index for picker pages.
+// Found on hardware (telemetry interval picker): with a section header above the options,
+// "cursor - 1" selected the WRONG table entry, because headers occupy items[] slots.
+uint8_t InkHUD::MenuApplet::pickerOptionIndex() const
+{
+    uint8_t selectable = 0;
+    for (uint8_t i = 0; i < cursor && i < items.size(); i++) {
+        if (!items.at(i).isHeader)
+            selectable++;
+    }
+    return selectable == 0 ? 0xFF : selectable - 1;
+}
+
 // Perform action for a menu item, then change page
 // Behaviors for MenuActions are defined here
 void InkHUD::MenuApplet::execute(MenuItem item)
@@ -467,8 +670,7 @@ void InkHUD::MenuApplet::execute(MenuItem item)
     case NO_ACTION:
         if (currentPage == MenuPage::NODE_CONFIG_CHANNELS && item.nextPage == MenuPage::NODE_CONFIG_CHANNEL_DETAIL) {
 
-            // cursor - 1 because index 0 is "Back"
-            selectedChannelIndex = cursor - 1;
+            selectedChannelIndex = pickerOptionIndex();
         }
         break;
 
@@ -512,6 +714,10 @@ void InkHUD::MenuApplet::execute(MenuItem item)
         inkhud->rotate();
         break;
 
+    case TOGGLE_JOYSTICK:
+        inkhud->toggleJoystick();
+        break;
+
     case ALIGN_JOYSTICK:
         inkhud->openAlignStick();
         break;
@@ -549,6 +755,18 @@ void InkHUD::MenuApplet::execute(MenuItem item)
         }
         break;
 
+    case TOGGLE_NODE_MARKERS:  // NavMap reads these live each render, so no explicit redraw needed here
+    case TOGGLE_AUTO_JUMP_MSG:
+    case TOGGLE_MAP_LABELS:
+    case TOGGLE_PLACE_LABELS:
+    case TOGGLE_HOSPITALS:
+    case TOGGLE_SHELTERS:
+    case TOGGLE_EMERGENCY_SVC:
+        if (item.checkState) {
+            *item.checkState = !(*item.checkState);
+        }
+        break;
+
     case TOGGLE_INVERT_COLOR:
         if (config.display.displaymode == meshtastic_Config_DisplayConfig_DisplayMode_INVERTED)
             config.display.displaymode = meshtastic_Config_DisplayConfig_DisplayMode_DEFAULT;
@@ -559,8 +777,7 @@ void InkHUD::MenuApplet::execute(MenuItem item)
         break;
 
     case SET_RECENTS: {
-        // cursor - 1 because index 0 is "Back"
-        const uint8_t index = cursor - 1;
+        const uint8_t index = pickerOptionIndex();
         constexpr uint8_t optionCount = sizeof(RECENTS_OPTIONS_MINUTES) / sizeof(RECENTS_OPTIONS_MINUTES[0]);
         assert(index < optionCount);
         settings->recentlyActiveSeconds = RECENTS_OPTIONS_MINUTES[index] * 60;
@@ -617,6 +834,11 @@ void InkHUD::MenuApplet::execute(MenuItem item)
         }
         nodeDB->saveToDisk(SEGMENT_CONFIG);
         service->reloadConfig(SEGMENT_CONFIG);
+#if defined(T_DECK_MAX)
+        // Drive the XL9555 GPS rail now: it was previously applied only at boot, so a runtime
+        // disable left the GPS module powered (~25-30mA) until the next reboot.
+        tdeckmaxApplyGpsRail();
+#endif
 #endif
         break;
 
@@ -626,7 +848,7 @@ void InkHUD::MenuApplet::execute(MenuItem item)
         break;
 
     case SET_POSITION_BROADCAST_INTERVAL: {
-        const uint8_t index = cursor - 1;
+        const uint8_t index = pickerOptionIndex();
         constexpr uint8_t optionCount = sizeof(POSITION_BROADCAST_OPTIONS) / sizeof(POSITION_BROADCAST_OPTIONS[0]);
         if (index < optionCount && config.position.position_broadcast_secs != POSITION_BROADCAST_OPTIONS[index].value) {
             config.position.position_broadcast_secs = POSITION_BROADCAST_OPTIONS[index].value;
@@ -636,7 +858,7 @@ void InkHUD::MenuApplet::execute(MenuItem item)
     }
 
     case SET_SMART_BROADCAST_INTERVAL: {
-        const uint8_t index = cursor - 1;
+        const uint8_t index = pickerOptionIndex();
         constexpr uint8_t optionCount = sizeof(SMART_INTERVAL_OPTIONS) / sizeof(SMART_INTERVAL_OPTIONS[0]);
         if (index < optionCount && config.position.broadcast_smart_minimum_interval_secs != SMART_INTERVAL_OPTIONS[index].value) {
             config.position.broadcast_smart_minimum_interval_secs = SMART_INTERVAL_OPTIONS[index].value;
@@ -646,7 +868,7 @@ void InkHUD::MenuApplet::execute(MenuItem item)
     }
 
     case SET_SMART_BROADCAST_DISTANCE: {
-        const uint8_t index = cursor - 1;
+        const uint8_t index = pickerOptionIndex();
         constexpr uint8_t optionCount = sizeof(SMART_DISTANCE_OPTIONS) / sizeof(SMART_DISTANCE_OPTIONS[0]);
         if (index < optionCount && config.position.broadcast_smart_minimum_distance != SMART_DISTANCE_OPTIONS[index]) {
             config.position.broadcast_smart_minimum_distance = SMART_DISTANCE_OPTIONS[index];
@@ -656,11 +878,60 @@ void InkHUD::MenuApplet::execute(MenuItem item)
     }
 
     case SET_GPS_UPDATE_INTERVAL: {
-        const uint8_t index = cursor - 1;
+        const uint8_t index = pickerOptionIndex();
         constexpr uint8_t optionCount = sizeof(GPS_UPDATE_INTERVAL_OPTIONS) / sizeof(GPS_UPDATE_INTERVAL_OPTIONS[0]);
         if (index < optionCount && config.position.gps_update_interval != GPS_UPDATE_INTERVAL_OPTIONS[index].value) {
             config.position.gps_update_interval = GPS_UPDATE_INTERVAL_OPTIONS[index].value;
             applyConfigReload(SEGMENT_CONFIG, true);
+        }
+        break;
+    }
+
+    case TOGGLE_DEVICE_TELEMETRY:
+        // DeviceTelemetryModule checks this flag live on every send decision - no reboot
+        moduleConfig.has_telemetry = true;
+        moduleConfig.telemetry.device_telemetry_enabled = !moduleConfig.telemetry.device_telemetry_enabled;
+        applyConfigReload(SEGMENT_MODULECONFIG);
+        break;
+
+    case TOGGLE_POWER_TELEMETRY:
+        // PowerTelemetryModule is only CONSTRUCTED at boot when enabled (Modules.cpp), so this
+        // applies via the standard save-and-reboot, same idiom as Powersave / modem presets
+        moduleConfig.has_telemetry = true;
+        moduleConfig.telemetry.power_measurement_enabled = !moduleConfig.telemetry.power_measurement_enabled;
+        applyConfigReload(SEGMENT_MODULECONFIG, true);
+        break;
+
+    case SET_DEVICE_TELEMETRY_INTERVAL: {
+        const uint8_t index = pickerOptionIndex();
+        constexpr uint8_t optionCount = sizeof(TELEMETRY_INTERVAL_OPTIONS) / sizeof(TELEMETRY_INTERVAL_OPTIONS[0]);
+        if (index < optionCount && moduleConfig.telemetry.device_update_interval != TELEMETRY_INTERVAL_OPTIONS[index].value) {
+            moduleConfig.has_telemetry = true;
+            moduleConfig.telemetry.device_update_interval = TELEMETRY_INTERVAL_OPTIONS[index].value;
+            applyConfigReload(SEGMENT_MODULECONFIG); // read live each cycle; effective next pass
+        }
+        break;
+    }
+
+    case SET_POWER_TELEMETRY_INTERVAL: {
+        const uint8_t index = pickerOptionIndex();
+        constexpr uint8_t optionCount = sizeof(TELEMETRY_INTERVAL_OPTIONS) / sizeof(TELEMETRY_INTERVAL_OPTIONS[0]);
+        if (index < optionCount && moduleConfig.telemetry.power_update_interval != TELEMETRY_INTERVAL_OPTIONS[index].value) {
+            moduleConfig.has_telemetry = true;
+            moduleConfig.telemetry.power_update_interval = TELEMETRY_INTERVAL_OPTIONS[index].value;
+            applyConfigReload(SEGMENT_MODULECONFIG); // read live each cycle; effective next pass
+        }
+        break;
+    }
+
+    case SET_NODEINFO_INTERVAL: {
+        const uint8_t index = pickerOptionIndex();
+        constexpr uint8_t optionCount = sizeof(NODEINFO_INTERVAL_OPTIONS) / sizeof(NODEINFO_INTERVAL_OPTIONS[0]);
+        if (index < optionCount && config.device.node_info_broadcast_secs != NODEINFO_INTERVAL_OPTIONS[index].value) {
+            config.device.node_info_broadcast_secs = NODEINFO_INTERVAL_OPTIONS[index].value;
+            // NodeInfoModule re-reads this when scheduling each next send - live, no reboot
+            // (worst case one old-interval lag before the new cadence starts)
+            applyConfigReload(SEGMENT_CONFIG);
         }
         break;
     }
@@ -742,8 +1013,7 @@ void InkHUD::MenuApplet::execute(MenuItem item)
 
     // Display
     case SET_DISPLAY_TIMEOUT: {
-        // cursor - 1 because index 0 is "Back"
-        const uint8_t index = cursor - 1;
+        const uint8_t index = pickerOptionIndex();
         constexpr uint8_t optionCount = sizeof(DISPLAY_TIMEOUT_OPTIONS) / sizeof(DISPLAY_TIMEOUT_OPTIONS[0]);
         if (index < optionCount) {
             config.display.screen_on_secs = DISPLAY_TIMEOUT_OPTIONS[index].seconds;
@@ -983,8 +1253,7 @@ void InkHUD::MenuApplet::execute(MenuItem item)
         break;
 
     case SET_PRESET_FROM_REGION: {
-        // cursor - 1 because index 0 is "Back"
-        const uint8_t index = cursor - 1;
+        const uint8_t index = pickerOptionIndex();
         if (index < regionPresetCount) {
             applyLoRaPreset(regionPresets[index]);
         }
@@ -1104,7 +1373,7 @@ void InkHUD::MenuApplet::execute(MenuItem item)
             ch.settings.has_module_settings = true;
 
         // Cursor - 1 because of "Back"
-        uint8_t index = cursor - 1;
+        uint8_t index = pickerOptionIndex();
 
         constexpr uint8_t optionCount = sizeof(POSITION_PRECISION_OPTIONS) / sizeof(POSITION_PRECISION_OPTIONS[0]);
 
@@ -1157,6 +1426,177 @@ void InkHUD::MenuApplet::execute(MenuItem item)
         break;
     }
 
+    case MAP_GPS_LOCATE: {
+        MapApplet *mapApplet = borrowedTileOwner ? borrowedTileOwner->asMapApplet() : nullptr;
+        if (mapApplet)
+            mapApplet->startGpsLocate(); // false (no GPS / unsupported applet) is just a no-op
+        break;
+    }
+
+    case MAP_GPS_TRACE: {
+        MapApplet *mapApplet = borrowedTileOwner ? borrowedTileOwner->asMapApplet() : nullptr;
+        if (mapApplet) {
+            mapApplet->toggleGpsTrace();
+            if (item.checkState)
+                *(item.checkState) = mapApplet->isGpsTracing();
+        }
+        break;
+    }
+
+    case MAP_SET_POSITION: {
+        MapApplet *mapApplet = borrowedTileOwner ? borrowedTileOwner->asMapApplet() : nullptr;
+        if (mapApplet)
+            mapApplet->setPositionToMapCenter();
+        break;
+    }
+
+    case DMCHAT_CLOSE: {
+        DMChatApplet *dmChat = borrowedTileOwner ? borrowedTileOwner->asDMChatApplet() : nullptr;
+        if (dmChat && dmChat->isBound()) {
+            dmChat->closeChat();            // unbind + persist + clear the slot's settings flags
+            inkhud->updateAppletSelection(); // menu is foreground here: deactivate + refill the tile
+        }
+        break;
+    }
+
+    case UNICHAT_PICK: {
+        UniChatApplet *chat = borrowedTileOwner ? borrowedTileOwner->asUniChatApplet() : nullptr;
+        if (chat)
+            chat->openTargetList();
+        break;
+    }
+
+    case UNICHAT_CLEAR: {
+        UniChatApplet *chat = borrowedTileOwner ? borrowedTileOwner->asUniChatApplet() : nullptr;
+        if (chat)
+            chat->clearThread();
+        break;
+    }
+
+#if defined(MOD_INPUT_MENU)
+    case HEARD_TOGGLE_FAVORITE: {
+        HeardApplet *heard = borrowedTileOwner ? borrowedTileOwner->asHeardApplet() : nullptr;
+        if (heard)
+            heard->toggleSelectedFavorite();
+        break;
+    }
+
+    case HEARD_SELECT_MODE: {
+        HeardApplet *heard = borrowedTileOwner ? borrowedTileOwner->asHeardApplet() : nullptr;
+        if (heard)
+            heard->enterSelectMode();
+        break;
+    }
+
+    case MENU_OPEN_INPUT:
+        // Deferred: the IME can only borrow the tile after we've given it back (onBackground)
+        openInputAfterClose = true;
+        break;
+#endif // defined(MOD_INPUT_MENU)
+
+#if defined(T_DECK_MAX)
+    // T-Deck Max hardware toggles: flip the pref, drive the variant hook, persist.
+    case TOGGLE_ANTENNA:
+        quickToggleAntenna(); // shared with the alt+A keyboard chord: flip + drive + persist
+        if (item.checkState)
+            *(item.checkState) = tdeckMaxPrefs.extAntenna;
+        break;
+
+    case CYCLE_FRONTLIGHT:
+        quickCycleFrontlight();
+        break;
+
+    case CYCLE_VIBRA:
+        quickCycleVibra();
+        break;
+
+    case TOGGLE_TOUCH:
+        tdeckMaxPrefs.touchEnabled = !tdeckMaxPrefs.touchEnabled;
+        tdeckmaxSetTouchEnabled(tdeckMaxPrefs.touchEnabled);
+        saveTDeckMaxPrefs();
+        if (item.checkState)
+            *(item.checkState) = tdeckMaxPrefs.touchEnabled;
+        break;
+
+    case TOGGLE_CPU_FREQ:
+        tdeckMaxPrefs.cpuFast = !tdeckMaxPrefs.cpuFast;
+        tdeckmaxSetCpuFast(tdeckMaxPrefs.cpuFast);
+        saveTDeckMaxPrefs();
+        if (item.checkState)
+            *(item.checkState) = tdeckMaxPrefs.cpuFast;
+        break;
+
+    case TOGGLE_RX_SNIFF:
+        tdeckMaxPrefs.rxSniffEco = !tdeckMaxPrefs.rxSniffEco;
+        // Takes effect on the radio's next RX re-arm (next packet / TX) - seconds on a busy channel
+        sx126xRxMinSymbols = tdeckMaxPrefs.rxSniffEco ? 4 : 8;
+        saveTDeckMaxPrefs();
+        if (item.checkState)
+            *(item.checkState) = tdeckMaxPrefs.rxSniffEco;
+        break;
+
+    case TOGGLE_TDM_DEBUG_HOLD:
+        // Session-only (never saved): stay-awake hold + fast Info refresh for live debugging.
+        // The checkState pointer IS the global, so the checkbox tracks it directly.
+        tdeckmaxDebugHold = !tdeckmaxDebugHold;
+        break;
+
+    case TOGGLE_TDM_SILENT:
+        // checkState pointer is the global (mirrors the persisted pref), so the checkbox tracks it
+        quickToggleSilent();
+        break;
+
+    case TOGGLE_QUICK_SLEEP:
+        tdeckMaxPrefs.quickSleep = !tdeckMaxPrefs.quickSleep;
+        tdeckmaxSetQuickSleep(tdeckMaxPrefs.quickSleep);
+        saveTDeckMaxPrefs();
+        if (item.checkState)
+            *(item.checkState) = tdeckMaxPrefs.quickSleep;
+        break;
+#endif
+
+#if defined(MOD_INPUT_MENU)
+#if !MESHTASTIC_EXCLUDE_TRACEROUTE
+    // Traceroute from the DM chat / Heard list: these actions only STAGE the target - their
+    // nextPage is the TRACEROUTE_VIA channel picker (KNOWN_ONLY relays refuse to rebroadcast
+    // channels they don't carry, so tracing across the public mesh needs a public channel).
+    // TRACEROUTE_GO then fires the trace; startTraceRoute handles the 30s cooldown and
+    // in-progress rejection internally, and on rejection we drop a note into the peer's chat
+    // so the flow never silently does nothing.
+    case DMCHAT_TRACEROUTE: {
+        DMChatApplet *dmChat = borrowedTileOwner ? borrowedTileOwner->asDMChatApplet() : nullptr;
+        traceTarget = (dmChat && dmChat->isBound()) ? dmChat->getPeer() : 0;
+        break;
+    }
+
+    case HEARD_TRACEROUTE: {
+        HeardApplet *heard = borrowedTileOwner ? borrowedTileOwner->asHeardApplet() : nullptr;
+        traceTarget = heard ? heard->selectedNodeNum() : 0;
+        break;
+    }
+
+    case TRACEROUTE_GO: {
+        // Map the cursor back to the nth enabled channel - same enumeration the page build used
+        const uint8_t want = pickerOptionIndex();
+        uint8_t seen = 0;
+        for (uint8_t i = 0; i < MAX_NUM_CHANNELS; i++) {
+            const meshtastic_Channel &ch = channels.getByIndex(i);
+            if (!ch.has_settings || ch.role == meshtastic_Channel_Role_DISABLED)
+                continue;
+            if (seen++ == want) {
+                if (traceTarget && traceRouteModule) {
+                    if (!traceRouteModule->startTraceRoute(traceTarget, i))
+                        traceRouteModule->deliverTraceToChat(traceTarget, "not started (cooldown or already tracing)");
+                }
+                break;
+            }
+        }
+        traceTarget = 0;
+        break;
+    }
+#endif // !MESHTASTIC_EXCLUDE_TRACEROUTE
+#endif
+
     default:
         LOG_WARN("Action not implemented");
     }
@@ -1177,6 +1617,15 @@ void InkHUD::MenuApplet::showPage(MenuPage page)
     switch (page) {
     case ROOT:
         previousPage = MenuPage::EXIT;
+
+#if defined(MOD_INPUT_MENU)
+        // NavMap: typed place/coordinate search is the most-used action there - keep it FIRST
+        // so menu -> Enter launches the IME immediately (user request 2026-08-07). Other applet
+        // types keep their typed-input item at its usual spot further down.
+        if (borrowedTileOwner && Controllable::checkControllable(borrowedTileOwner) == Controllable::Types::NavMap)
+            items.push_back(MenuItem("Search Place", MenuAction::MENU_OPEN_INPUT, MenuPage::EXIT));
+#endif
+
         // Optional: next applet
         if (settings->optionalMenuItems.nextTile && settings->userTiles.count > 1)
             items.push_back(MenuItem("Next Tile", MenuAction::NEXT_TILE, MenuPage::ROOT)); // Only if multiple applets shown
@@ -1193,8 +1642,82 @@ void InkHUD::MenuApplet::showPage(MenuPage page)
                     items.push_back(MenuItem("Zoom Out", MenuAction::MAP_ZOOM_OUT, MenuPage::EXIT));
                 if (mapApplet->isZoomLocked())
                     items.push_back(MenuItem("Reset Zoom", MenuAction::MAP_ZOOM_RESET, MenuPage::EXIT));
+#if !MESHTASTIC_EXCLUDE_GPS && HAS_GPS
+                if (gps && !config.position.fixed_position) {
+                    // Locate + Trace are MAP-ONLY (never broadcast); Set Pos Here is the
+                    // explicit opposite: it publishes the map centre as the node position.
+                    items.push_back(MenuItem("GPS Locate", MenuAction::MAP_GPS_LOCATE, MenuPage::EXIT));
+                    mapTracing = mapApplet->isGpsTracing();
+                    items.push_back(MenuItem("GPS Trace", MenuAction::MAP_GPS_TRACE, MenuPage::EXIT, &mapTracing));
+                }
+                if (!config.position.fixed_position)
+                    items.push_back(MenuItem("Set Pos Here", MenuAction::MAP_SET_POSITION, MenuPage::EXIT));
+#endif
             }
         }
+
+        // Chat controls - only when viewing a bound DM chat window
+        {
+            DMChatApplet *dmChat = borrowedTileOwner ? borrowedTileOwner->asDMChatApplet() : nullptr;
+            if (dmChat && dmChat->isBound()) {
+#if !MESHTASTIC_EXCLUDE_TRACEROUTE
+                items.push_back(MenuItem("Traceroute", MenuAction::DMCHAT_TRACEROUTE, MenuPage::TRACEROUTE_VIA));
+#endif
+                items.push_back(MenuItem("Close Chat", MenuAction::DMCHAT_CLOSE, MenuPage::EXIT));
+            }
+        }
+
+        // Unified chats controls - only when viewing a Chats applet
+        {
+            UniChatApplet *chat = borrowedTileOwner ? borrowedTileOwner->asUniChatApplet() : nullptr;
+            if (chat) {
+                items.push_back(MenuItem("Pick Chat", MenuAction::UNICHAT_PICK, MenuPage::EXIT));
+                if (chat->hasThreadTarget())
+                    items.push_back(MenuItem("Clear Thread", MenuAction::UNICHAT_CLEAR, MenuPage::EXIT));
+            }
+        }
+
+#if defined(MOD_INPUT_MENU)
+        // Typed input into the applet under the menu, via the IME: label by applet type.
+        // (Chat-style applets also open the IME directly on Enter; this item is the route for
+        // everything else - and a discoverable alternative for the chats.)
+        {
+            const auto ctype =
+                borrowedTileOwner ? Controllable::checkControllable(borrowedTileOwner) : Controllable::Types::Uncontrollable;
+            const char *inputLabel = nullptr;
+            switch (ctype) {
+            case Controllable::Types::Heard:
+                inputLabel = "Search Node";
+                break;
+            // (NavMap's "Search Place" is pushed FIRST in this ROOT case, not here)
+            case Controllable::Types::UniChat:
+            case Controllable::Types::DMChat:
+            case Controllable::Types::ThreadedMessage:
+                inputLabel = "Reply";
+                break;
+            default:
+                break;
+            }
+            if (inputLabel)
+                items.push_back(MenuItem(inputLabel, MenuAction::MENU_OPEN_INPUT, MenuPage::EXIT));
+        }
+
+        // Node controls - when viewing the Heard list
+        {
+            HeardApplet *heard = borrowedTileOwner ? borrowedTileOwner->asHeardApplet() : nullptr;
+            if (heard) {
+                const NodeNum sel = heard->selectedNodeNum();
+                if (sel) {
+                    items.push_back(MenuItem(nodeDB->isFavorite(sel) ? "Unfavorite" : "Favorite",
+                                             MenuAction::HEARD_TOGGLE_FAVORITE, MenuPage::EXIT));
+#if !MESHTASTIC_EXCLUDE_TRACEROUTE
+                    items.push_back(MenuItem("Traceroute", MenuAction::HEARD_TRACEROUTE, MenuPage::TRACEROUTE_VIA));
+#endif
+                } else
+                    items.push_back(MenuItem("Select Node", MenuAction::HEARD_SELECT_MODE, MenuPage::EXIT));
+            }
+        }
+#endif // defined(MOD_INPUT_MENU)
 
         items.push_back(MenuItem("Options", MenuPage::OPTIONS));
         // items.push_back(MenuItem("Display Off", MenuPage::EXIT)); // TODO
@@ -1207,6 +1730,30 @@ void InkHUD::MenuApplet::showPage(MenuPage page)
         populateSendPage();
         previousPage = MenuPage::ROOT;
         break;
+
+#if defined(MOD_INPUT_MENU) && !MESHTASTIC_EXCLUDE_TRACEROUTE
+    case TRACEROUTE_VIA: {
+        // Channel picker for a staged traceroute (traceTarget set by DMCHAT_/HEARD_TRACEROUTE).
+        // Same enumeration as TRACEROUTE_GO's cursor mapping - keep the two loops identical.
+        previousPage = MenuPage::EXIT;
+        items.push_back(MenuItem("Back", previousPage));
+        for (uint8_t i = 0; i < MAX_NUM_CHANNELS; i++) {
+            const meshtastic_Channel &ch = channels.getByIndex(i);
+            if (!ch.has_settings || ch.role == meshtastic_Channel_Role_DISABLED)
+                continue;
+            std::string label = "Via ";
+            if (ch.role == meshtastic_Channel_Role_PRIMARY)
+                label += strlen(ch.settings.name) > 0 ? parse(ch.settings.name) : std::string("Primary");
+            else if (strlen(ch.settings.name) > 0)
+                label += parse(ch.settings.name);
+            else
+                label += "Channel" + to_string(i + 1);
+            nodeConfigLabels.push_back(label);
+            items.push_back(MenuItem(nodeConfigLabels.back().c_str(), MenuAction::TRACEROUTE_GO, MenuPage::EXIT));
+        }
+        break;
+    }
+#endif
 
     case CANNEDMESSAGE_RECIPIENT:
         populateRecipientPage();
@@ -1235,14 +1782,19 @@ void InkHUD::MenuApplet::showPage(MenuPage page)
         if (settings->userTiles.maxCount > 1)
             items.push_back(MenuItem("Layout", MenuAction::LAYOUT, MenuPage::OPTIONS));
         items.push_back(MenuItem("Rotate", MenuAction::ROTATE, MenuPage::OPTIONS));
+        items.push_back(MenuItem("Joystick", MenuAction::TOGGLE_JOYSTICK, MenuPage::OPTIONS, &settings->joystick.enabled));
         if (settings->joystick.enabled && !inkhud->twoWayRocker)
             items.push_back(MenuItem("Align Joystick", MenuAction::ALIGN_JOYSTICK, MenuPage::EXIT));
         items.push_back(MenuItem("Notifications", MenuAction::TOGGLE_NOTIFICATIONS, MenuPage::OPTIONS,
                                  &settings->optionalFeatures.notifications));
         items.push_back(MenuItem("Battery Icon", MenuAction::TOGGLE_BATTERY_ICON, MenuPage::OPTIONS,
                                  &settings->optionalFeatures.batteryIcon));
+        items.push_back(MenuItem("Map", MenuPage::MAP_OPTIONS)); // NavMap toggles, grouped (see MAP_OPTIONS)
         invertedColors = (config.display.displaymode == meshtastic_Config_DisplayConfig_DisplayMode_INVERTED);
         items.push_back(MenuItem("Invert Color", MenuAction::TOGGLE_INVERT_COLOR, MenuPage::OPTIONS, &invertedColors));
+#if defined(T_DECK_MAX)
+        items.push_back(MenuItem("Hardware", MenuPage::TDECKMAX_HW));
+#endif
         items.push_back(MenuItem("Exit", MenuPage::EXIT));
         break;
 
@@ -1267,6 +1819,28 @@ void InkHUD::MenuApplet::showPage(MenuPage page)
         items.push_back(MenuItem("Exit", MenuPage::EXIT));
         break;
 
+    case MAP_OPTIONS:
+        // NavMap display toggles, formerly inline on Options. Page target MAP_OPTIONS keeps the
+        // menu here so several toggles can be flipped in a row.
+        previousPage = MenuPage::OPTIONS;
+        items.push_back(MenuItem("Back", previousPage));
+        items.push_back(MenuItem("Node Markers", MenuAction::TOGGLE_NODE_MARKERS, MenuPage::MAP_OPTIONS,
+                                 &settings->optionalFeatures.showNodeMarkers));
+        items.push_back(MenuItem("Jump To Msg", MenuAction::TOGGLE_AUTO_JUMP_MSG, MenuPage::MAP_OPTIONS,
+                                 &settings->optionalFeatures.autoJumpToMsgSender));
+        items.push_back(MenuItem("Map Labels", MenuAction::TOGGLE_MAP_LABELS, MenuPage::MAP_OPTIONS,
+                                 &settings->optionalFeatures.showMapLabels));
+        items.push_back(MenuItem("Place Labels", MenuAction::TOGGLE_PLACE_LABELS, MenuPage::MAP_OPTIONS,
+                                 &settings->optionalFeatures.showPlaceLabels));
+        items.push_back(MenuItem("Hospitals", MenuAction::TOGGLE_HOSPITALS, MenuPage::MAP_OPTIONS,
+                                 &settings->optionalFeatures.showHospitals));
+        items.push_back(MenuItem("Shelters", MenuAction::TOGGLE_SHELTERS, MenuPage::MAP_OPTIONS,
+                                 &settings->optionalFeatures.showShelters));
+        items.push_back(MenuItem("Police/Fire", MenuAction::TOGGLE_EMERGENCY_SVC, MenuPage::MAP_OPTIONS,
+                                 &settings->optionalFeatures.showEmergencyServices));
+        items.push_back(MenuItem("Exit", MenuPage::EXIT));
+        break;
+
     case NODE_CONFIG:
         previousPage = MenuPage::ROOT;
         items.push_back(MenuItem("Back", previousPage));
@@ -1279,6 +1853,7 @@ void InkHUD::MenuApplet::showPage(MenuPage page)
         items.push_back(MenuItem("Device", MenuPage::NODE_CONFIG_DEVICE));
         items.push_back(MenuItem("Position", MenuPage::NODE_CONFIG_POSITION));
         items.push_back(MenuItem("Power", MenuPage::NODE_CONFIG_POWER));
+        items.push_back(MenuItem("Telemetry", MenuPage::NODE_CONFIG_TELEMETRY));
 #if defined(ARCH_ESP32)
         items.push_back(MenuItem("Network", MenuPage::NODE_CONFIG_NETWORK));
 #endif
@@ -1306,9 +1881,28 @@ void InkHUD::MenuApplet::showPage(MenuPage page)
         nodeConfigLabels.emplace_back("Timezone: " + std::string(tzLabel));
         items.push_back(MenuItem(nodeConfigLabels.back().c_str(), MenuAction::NO_ACTION, MenuPage::TIMEZONE));
 
+        nodeConfigLabels.emplace_back(
+            "NodeInfo: " + getUInt32OptionLabel(NODEINFO_INTERVAL_OPTIONS,
+                                                sizeof(NODEINFO_INTERVAL_OPTIONS) / sizeof(NODEINFO_INTERVAL_OPTIONS[0]),
+                                                config.device.node_info_broadcast_secs));
+        items.push_back(
+            MenuItem(nodeConfigLabels.back().c_str(), MenuAction::NO_ACTION, MenuPage::NODE_CONFIG_DEVICE_NODEINFO_INTERVAL));
+
         items.push_back(MenuItem("Exit", MenuPage::EXIT));
         break;
     }
+
+    case NODE_CONFIG_DEVICE_NODEINFO_INTERVAL:
+        previousPage = MenuPage::NODE_CONFIG_DEVICE;
+        items.push_back(MenuItem("Back", previousPage));
+        items.push_back(MenuItem::Header("NodeInfo broadcast every"));
+        for (const auto &option : NODEINFO_INTERVAL_OPTIONS) {
+            nodeConfigLabels.emplace_back(option.label);
+            items.push_back(
+                MenuItem(nodeConfigLabels.back().c_str(), MenuAction::SET_NODEINFO_INTERVAL, MenuPage::NODE_CONFIG_DEVICE));
+        }
+        items.push_back(MenuItem("Exit", MenuPage::EXIT));
+        break;
 
     case NODE_CONFIG_POSITION: {
         previousPage = MenuPage::NODE_CONFIG;
@@ -1406,6 +2000,61 @@ void InkHUD::MenuApplet::showPage(MenuPage page)
             nodeConfigLabels.emplace_back(option.label);
             items.push_back(
                 MenuItem(nodeConfigLabels.back().c_str(), MenuAction::SET_GPS_UPDATE_INTERVAL, MenuPage::NODE_CONFIG_POSITION));
+        }
+        items.push_back(MenuItem("Exit", MenuPage::EXIT));
+        break;
+
+    case NODE_CONFIG_TELEMETRY: {
+        previousPage = MenuPage::NODE_CONFIG;
+        items.push_back(MenuItem("Back", previousPage));
+
+        items.push_back(MenuItem::Header("Device Telemetry"));
+        // Checked live per module cycle - toggling and interval changes need no reboot
+        items.push_back(MenuItem("Broadcast", MenuAction::TOGGLE_DEVICE_TELEMETRY, MenuPage::NODE_CONFIG_TELEMETRY,
+                                 &moduleConfig.telemetry.device_telemetry_enabled));
+        nodeConfigLabels.emplace_back(
+            "Interval: " + getUInt32OptionLabel(TELEMETRY_INTERVAL_OPTIONS,
+                                                sizeof(TELEMETRY_INTERVAL_OPTIONS) / sizeof(TELEMETRY_INTERVAL_OPTIONS[0]),
+                                                moduleConfig.telemetry.device_update_interval));
+        items.push_back(
+            MenuItem(nodeConfigLabels.back().c_str(), MenuAction::NO_ACTION, MenuPage::NODE_CONFIG_TELEMETRY_DEVICE_INTERVAL));
+
+        items.push_back(MenuItem::Header("Power Telemetry"));
+        // Toggling reboots (PowerTelemetryModule is only constructed at boot when enabled);
+        // the interval alone applies live, read each cycle by the running module
+        items.push_back(MenuItem("Broadcast", MenuAction::TOGGLE_POWER_TELEMETRY, MenuPage::EXIT,
+                                 &moduleConfig.telemetry.power_measurement_enabled));
+        nodeConfigLabels.emplace_back(
+            "Interval: " + getUInt32OptionLabel(TELEMETRY_INTERVAL_OPTIONS,
+                                                sizeof(TELEMETRY_INTERVAL_OPTIONS) / sizeof(TELEMETRY_INTERVAL_OPTIONS[0]),
+                                                moduleConfig.telemetry.power_update_interval));
+        items.push_back(
+            MenuItem(nodeConfigLabels.back().c_str(), MenuAction::NO_ACTION, MenuPage::NODE_CONFIG_TELEMETRY_POWER_INTERVAL));
+
+        items.push_back(MenuItem("Exit", MenuPage::EXIT));
+        break;
+    }
+
+    case NODE_CONFIG_TELEMETRY_DEVICE_INTERVAL:
+        previousPage = MenuPage::NODE_CONFIG_TELEMETRY;
+        items.push_back(MenuItem("Back", previousPage));
+        items.push_back(MenuItem::Header("Device telemetry every"));
+        for (const auto &option : TELEMETRY_INTERVAL_OPTIONS) {
+            nodeConfigLabels.emplace_back(option.label);
+            items.push_back(MenuItem(nodeConfigLabels.back().c_str(), MenuAction::SET_DEVICE_TELEMETRY_INTERVAL,
+                                     MenuPage::NODE_CONFIG_TELEMETRY));
+        }
+        items.push_back(MenuItem("Exit", MenuPage::EXIT));
+        break;
+
+    case NODE_CONFIG_TELEMETRY_POWER_INTERVAL:
+        previousPage = MenuPage::NODE_CONFIG_TELEMETRY;
+        items.push_back(MenuItem("Back", previousPage));
+        items.push_back(MenuItem::Header("Power telemetry every"));
+        for (const auto &option : TELEMETRY_INTERVAL_OPTIONS) {
+            nodeConfigLabels.emplace_back(option.label);
+            items.push_back(MenuItem(nodeConfigLabels.back().c_str(), MenuAction::SET_POWER_TELEMETRY_INTERVAL,
+                                     MenuPage::NODE_CONFIG_TELEMETRY));
         }
         items.push_back(MenuItem("Exit", MenuPage::EXIT));
         break;
@@ -1783,6 +2432,50 @@ void InkHUD::MenuApplet::showPage(MenuPage page)
         items.push_back(MenuItem("Exit", MenuPage::EXIT));
         break;
 
+#if defined(T_DECK_MAX)
+    // T-Deck Max hardware toggles submenu (reached from OPTIONS -> "Hardware")
+    case TDECKMAX_HW:
+        previousPage = MenuPage::OPTIONS;
+        items.push_back(MenuItem("Back", previousPage));
+        loadTDeckMaxPrefs();
+
+        // Antenna: checkbox reflects "external selected"
+        tdmExtAntenna = tdeckMaxPrefs.extAntenna;
+        items.push_back(MenuItem("Ext Antenna", MenuAction::TOGGLE_ANTENNA, MenuPage::TDECKMAX_HW, &tdmExtAntenna));
+
+        // Frontlight: label shows current level; selecting cycles it
+        items.push_back(MenuItem(frontlightLabel(tdeckMaxPrefs.frontlight), MenuAction::CYCLE_FRONTLIGHT, MenuPage::TDECKMAX_HW));
+        items.push_back(MenuItem(vibraModeLabel(tdeckMaxPrefs.vibraMode), MenuAction::CYCLE_VIBRA, MenuPage::TDECKMAX_HW));
+
+        // Touchscreen menu item removed: the CST328 is held in reset on this keyboard-only build
+        // (lateInitVariant) -- there is nothing for the toggle to control. tdeckMaxPrefs.touchEnabled
+        // stays in the prefs struct for layout compatibility, permanently unused.
+
+        // Quick sleep: idle -> immediate light sleep (default ON)
+        tdmQuickSleep = tdeckMaxPrefs.quickSleep;
+        items.push_back(MenuItem("Quick Sleep", MenuAction::TOGGLE_QUICK_SLEEP, MenuPage::TDECKMAX_HW, &tdmQuickSleep));
+
+        // CPU 240MHz: race-to-sleep experiment (default off = 80MHz)
+        tdmCpuFast = tdeckMaxPrefs.cpuFast;
+        items.push_back(MenuItem("CPU 240MHz", MenuAction::TOGGLE_CPU_FREQ, MenuPage::TDECKMAX_HW, &tdmCpuFast));
+
+        // RX Sniff Eco: SX126x duty-cycle minSymbols 8 -> 4 (longer radio sleeps, weak-RX risk)
+        tdmRxSniffEco = tdeckMaxPrefs.rxSniffEco;
+        items.push_back(MenuItem("RX Sniff Eco", MenuAction::TOGGLE_RX_SNIFF, MenuPage::TDECKMAX_HW, &tdmRxSniffEco));
+
+        // Debug Hold: keep the device fully awake (no naps, no moon) + fast Info-applet refresh,
+        // for watching the live charger/gauge rows. Deliberately NOT persisted - resets on
+        // reboot so a forgotten debug session cannot drain the battery.
+        items.push_back(MenuItem("Debug Hold", MenuAction::TOGGLE_TDM_DEBUG_HOLD, MenuPage::TDECKMAX_HW, &tdeckmaxDebugHold));
+
+        // Silent mode (alt+S): super power saving - no e-ink refresh at all while asleep,
+        // messages only recorded (shown on next wake). Persisted; indicator = moon.
+        items.push_back(MenuItem("Silent Mode", MenuAction::TOGGLE_TDM_SILENT, MenuPage::TDECKMAX_HW, &tdeckmaxSilentMode));
+
+        items.push_back(MenuItem("Exit", MenuPage::EXIT));
+        break;
+#endif
+
     // Exit
     case EXIT:
         sendToBackground(); // Menu applet dismissed, allow normal behavior to resume
@@ -2049,8 +2742,31 @@ void InkHUD::MenuApplet::onButtonShortPress()
 
         // Touch-first nodes keep user-button short-press as "advance selection" in menus.
         // Any button-driven navigation should restore visible highlight.
+#if defined(T_DECK_MAX)
+        // Was the selection visible BEFORE this press? (The flag is cleared just below; the
+        // execute gate needs the pre-press value.)
+        const bool highlightWasVisible = cursorShown && !hideTouchSelectionHighlight;
+#endif
         hideTouchSelectionHighlight = false;
         if (!settings->joystick.enabled || useTouchFriendlyMenuLayout(inkhud)) {
+#if defined(T_DECK_MAX)
+            // T-Deck Max bezel: middle-short = CONFIRM. The left/right bezel keys already do
+            // prev/next (and keyboard W/S likewise), so executing the selected item here
+            // completes one-handed menu control: left/right = move, middle = execute.
+            if (highlightWasVisible) {
+                execute(items.at(cursor));
+                if (!wantsToRender())
+                    requestUpdate(Drivers::EInk::UpdateTypes::FAST);
+                return;
+            }
+            if (cursorShown) {
+                // A selection exists but was HIDDEN (touch swipe-scroll): this press only reveals
+                // it (flag cleared above); the next press executes. Never run an unseen item.
+                requestUpdate(Drivers::EInk::UpdateTypes::FAST);
+                return;
+            }
+            // No selection yet (menu freshly opened): fall through to select the first item.
+#endif
             if (!cursorShown) {
                 cursorShown = true;
                 // Select the first item that isn't a header

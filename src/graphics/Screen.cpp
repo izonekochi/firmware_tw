@@ -93,7 +93,7 @@ extern MessageStore messageStore;
 #include "platform/portduino/PortduinoGlue.h"
 #endif
 
-#if defined(T_LORA_PAGER)
+#if defined(T_LORA_PAGER) || defined(T_DECK_MAX)
 // KB backlight control
 #include "input/cardKbI2cImpl.h"
 #endif
@@ -694,6 +694,8 @@ void Screen::handleSetOn(bool on, FrameCallback einkScreensaver)
 #ifdef PIN_EINK_EN
             if (uiconfig.screen_brightness == 1)
                 digitalWrite(PIN_EINK_EN, HIGH);
+#elif defined(HAS_EINK_FRONTLIGHT) && defined(PIN_EINK_BL)
+            analogWrite(PIN_EINK_BL, brightness);
 #elif defined(PCA_PIN_EINK_EN)
             if (uiconfig.screen_brightness > 0)
                 io.digitalWrite(PCA_PIN_EINK_EN, HIGH);
@@ -753,6 +755,8 @@ void Screen::handleSetOn(bool on, FrameCallback einkScreensaver)
 
 #ifdef PIN_EINK_EN
             digitalWrite(PIN_EINK_EN, LOW);
+#elif defined(HAS_EINK_FRONTLIGHT) && defined(PIN_EINK_BL)
+            analogWrite(PIN_EINK_BL, 0);
 #elif defined(PCA_PIN_EINK_EN)
             io.digitalWrite(PCA_PIN_EINK_EN, LOW);
 #endif
@@ -865,6 +869,8 @@ void Screen::setup()
     // Apply loaded brightness
 #if defined(ST7789_CS)
     static_cast<TFTDisplay *>(dispdev)->setDisplayBrightness(brightness);
+#elif defined(HAS_EINK_FRONTLIGHT) && defined(PIN_EINK_BL)
+    analogWrite(PIN_EINK_BL, brightness);
 #elif defined(USE_OLED) || defined(USE_SSD1306) || defined(USE_SH1106) || defined(USE_SH1107) || defined(USE_SPISSD1306)
     dispdev->setBrightness(brightness);
 #endif
@@ -993,7 +999,7 @@ void Screen::setup()
 
 void Screen::setOn(bool on, FrameCallback einkScreensaver)
 {
-#if defined(T_LORA_PAGER)
+#if defined(T_LORA_PAGER) || defined(T_DECK_MAX)
     if (cardKbI2cImpl)
         cardKbI2cImpl->toggleBacklight(on);
 #endif
@@ -2289,6 +2295,13 @@ graphics::Screen::Screen(ScanI2C::DeviceAddress, meshtastic_Config_DisplayConfig
 
 bool shouldWakeOnReceivedMessage()
 {
+#if defined(T_DECK_MAX)
+    // T-Deck Max InkHUD sleep-UX: an incoming message must NEVER do the 30s ON screen-wake,
+    // regardless of external_notification.enabled. This fully decouples the haptic buzz (driven by
+    // ExternalNotificationModule) from screen behavior; the message applet still FAST-refreshes in
+    // place during the brief packet-wake DARK nap (see the message applets' onReceive), then re-sleeps.
+    return false;
+#endif
     /*
     The goal here is to determine when we do NOT wake up the screen on message received:
     - Any ext. notifications are turned on

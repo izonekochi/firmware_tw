@@ -1675,23 +1675,85 @@ bool Power::cw2015Init()
 #endif
 
 #if defined(HAS_PPM) && HAS_PPM
+#if defined(XPOWERS_CHIP_SY6970) && !defined(SY6970_SLAVE_ADDRESS)
+#define SY6970_SLAVE_ADDRESS 0x6A
+#endif
 
 /**
- * Adapter class for BQ25896/BQ27220 Lipo battery charger.
+ * Adapter class for XPowers charger/BQ27220 Lipo battery reporting.
  */
 class LipoCharger : public HasBatteryLevel
 {
   private:
     BQ27220 *bq = nullptr;
 
+#if defined(XPOWERS_CHIP_SY6970)
+    // SY6970 ADC is run one-shot to keep it OFF between reads (continuous mode would draw
+    // ~1mA through every light-sleep window). We cache the last conversion and refuse to
+    // re-trigger more often than every 5s so repeated telemetry reads don't spin the ADC.
+    uint32_t lastMeasureMs = 0;
+    uint16_t cachedVbatMv = 0;
+    bool haveMeasured = false;
+
+    // Fire a single ADC conversion (rate-limited to >=5s), cache VBAT, ADC self-disables.
+    void refreshMeasure()
+    {
+        if (PPM == nullptr)
+            return;
+        if (haveMeasured && Throttle::isWithinTimespanMs(lastMeasureMs, 5000))
+            return; // cached value is still fresh enough; don't wake the ADC
+        // ONE_SHORT sets CONV_START (REG02 bit7) with CONV_RATE=0: the SY6970 runs exactly one
+        // conversion, auto-clears CONV_START, and powers the ADC back down when finished.
+        PPM->enableMeasure(XPowersPPM::ONE_SHORT);
+        delay(30); // bounded wait for conversion-ready (datasheet worst case ~<=35ms)
+        cachedVbatMv = PPM->getBattVoltage();
+        lastMeasureMs = millis();
+        haveMeasured = true;
+    }
+#endif
+
   public:
-    /**
-     * Init the I2C BQ25896 Lipo battery charger
-     */
     bool runOnce()
     {
         if (PPM == nullptr) {
             PPM = new XPowersPPM;
+#if defined(XPOWERS_CHIP_SY6970)
+            bool result = PPM->init(Wire, I2C_SDA, I2C_SCL, SY6970_SLAVE_ADDRESS);
+            if (result) {
+                LOG_INFO("PPM SY6970 init succeeded");
+
+                // The SY6970 is battery-powered continuously, so registers survive reflashes
+                // and stale state from past sessions persists invisibly. Reset to silicon
+                // defaults, then re-kill the I2C watchdog the reset re-arms (unfed, it would
+                // revert every register 40s after boot).
+                PPM->resetDefault();
+                delay(20); // reset bit is self-clearing; let it finish before reconfiguring
+                PPM->disableWatchdog();
+                PPM->setSysPowerDownVoltage(3300);
+                PPM->setInputCurrentLimit(3250);
+                PPM->setChargeTargetVoltage(4208);
+                PPM->setPrechargeCurr(64);
+                PPM->setChargerConstantCurr(1024);
+                // Leave the ADC OFF at init. Continuous conversion (enableMeasure(CONTINUOUS))
+                // burns ~1mA the entire light-sleep window; instead each read fires a bounded
+                // one-shot conversion via refreshMeasure() and the SY6970 powers the ADC back
+                // down automatically. Charging does not need the ADC.
+                PPM->disableADCMeasure();
+                PPM->enableCharge();
+                // OTG boost defaults ON in the SY6970 (REG03 bit 5). With no adapter present the
+                // chip then boosts VBUS from the battery -- wasted power, and the bus-status
+                // register reads BUS_STATE_OTG, which isVbusIn() counts as "input present":
+                // getHasUSB() stuck true on battery (the T-Deck Max USB hold-awake then never
+                // let the screen time out, and the battery estimator showed "charging" forever).
+                // Nothing on these boards hosts USB peripherals: keep OTG off.
+                PPM->disableOTG();
+            } else {
+                LOG_WARN("PPM SY6970 init failed");
+                delete PPM;
+                PPM = nullptr;
+                return false;
+            }
+#else
             bool result = PPM->init(Wire, I2C_SDA, I2C_SCL, BQ25896_ADDR);
             if (result) {
                 LOG_INFO("PPM BQ25896 init succeeded");
@@ -1728,6 +1790,7 @@ class LipoCharger : public HasBatteryLevel
                 PPM = nullptr;
                 return false;
             }
+#endif
         }
         if (bq == nullptr) {
             bq = new BQ27220;
@@ -1767,12 +1830,32 @@ class LipoCharger : public HasBatteryLevel
     /**
      * return true if there is a battery installed in this unit
      */
-    virtual bool isBatteryConnect() override { return PPM->getBattVoltage() > 0; }
+    virtual bool isBatteryConnect() override
+    {
+#if defined(XPOWERS_CHIP_SY6970)
+        // Use the rate-limited one-shot ADC (VBAT comes from the SY6970 here; the reported
+        // battery voltage/percent path uses the BQ27220 fuel gauge instead).
+        refreshMeasure();
+        return cachedVbatMv > 0;
+#else
+        return PPM->getBattVoltage() > 0;
+#endif
+    }
 
     /**
      * return true if there is an external power source detected
      */
-    virtual bool isVbusIn() override { return PPM->isVbusIn(); }
+    virtual bool isVbusIn() override
+    {
+#if defined(XPOWERS_CHIP_SY6970)
+        // BUS_STATE_OTG also reads as "input present" through PPM->isVbusIn(), but OTG boost
+        // powers VBUS FROM the battery -- that must never count as external power. OTG is
+        // disabled at init; stay honest even if it were ever re-enabled.
+        return PPM->isVbusIn() && !PPM->isOTG();
+#else
+        return PPM->isVbusIn();
+#endif
+    }
 
     /**
      * return true if the battery is currently charging
@@ -1789,9 +1872,63 @@ class LipoCharger : public HasBatteryLevel
         }
         return isCharging;
     }
+
+#ifdef HAS_BQ27220
+    // Fuel-gauge time predictions for the UI (see power.h). Two I2C word reads; callers are the
+    // main-loop render path at a 60s cadence, so no rate limiting is needed here.
+    bool getGaugeTimes(uint16_t &toFullMin, uint16_t &toEmptyMin)
+    {
+        if (!bq)
+            return false;
+        toFullMin = bq->getTimeToFull();
+        toEmptyMin = bq->getTimeToEmpty();
+        return true;
+    }
+
+    // Live coulomb-counter readings for the UI (see power.h): signed battery current through
+    // the 10mOhm sense resistor (TI convention: negative = discharging) and the gauge's
+    // remaining-capacity integrator. The gauge runs autonomously on battery power - it keeps
+    // counting through light sleep - so delta-mAh over time is the true average consumption.
+    bool getGaugeLive(int16_t &currentMa, uint16_t &remainingMah)
+    {
+        if (!bq)
+            return false;
+        currentMa = bq->getCurrent();
+        remainingMah = bq->getRemainingCapacity();
+        return true;
+    }
+
+    // Battery-rail pair for power telemetry (see power.h): terminal voltage + signed current.
+    bool getGaugePower(uint16_t &voltageMv, int16_t &currentMa)
+    {
+        if (!bq)
+            return false;
+        voltageMv = bq->getVoltage();
+        currentMa = bq->getCurrent();
+        return true;
+    }
+#endif
 };
 
 LipoCharger lipoCharger;
+
+#ifdef HAS_BQ27220
+// UI accessors (declared in power.h): LipoCharger and its gauge handle are file-local to Power.cpp.
+bool bq27220GetGaugeTimes(uint16_t &toFullMin, uint16_t &toEmptyMin)
+{
+    return lipoCharger.getGaugeTimes(toFullMin, toEmptyMin);
+}
+
+bool bq27220GetGaugeLive(int16_t &currentMa, uint16_t &remainingMah)
+{
+    return lipoCharger.getGaugeLive(currentMa, remainingMah);
+}
+
+bool bq27220GetGaugePower(uint16_t &voltageMv, int16_t &currentMa)
+{
+    return lipoCharger.getGaugePower(voltageMv, currentMa);
+}
+#endif
 
 /**
  * Init the Lipo battery charger

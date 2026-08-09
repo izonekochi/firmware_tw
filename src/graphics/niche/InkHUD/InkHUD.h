@@ -18,6 +18,16 @@
 
 #include <vector>
 
+#if defined(T_DECK_MAX)
+// T-Deck Max InkHUD sleep-UX shared state: true while the device screen is awake (PowerFSM stateON),
+// false once it settles to sleep. Defined in InkHUD/Events.cpp and updated by Events::onScreenPower
+// (which observes notifyScreenPower). Read by the keyboard, touch/bezel, and message-applet code to
+// gate sleep-aware behavior, and by BatteryIconApplet/Applet::drawHeader to swap the top-right
+// corner between the battery and the "asleep" moon. Free global (not namespaced) so non-InkHUD TUs
+// (e.g. the board variant) can read it too.
+extern bool inkhudScreenAwake;
+#endif
+
 namespace NicheGraphics::InkHUD
 {
 
@@ -91,15 +101,21 @@ class InkHUD
     uint8_t getAppletIndex(Applet* app);
 #endif //defined(MOD_INPUT_MENU)
     void openMenu();
+#if defined(MOD_INPUT_MENU)
+    void openInputMenu(); // IME driving the focused applet
+#endif
     void openAppSwitcher();
     void openAlignStick();
     void openKeyboard();
     void closeKeyboard();
+    void restoreFromMenuSplit(); // Merge the transient InputMenu 1->2 tile split back after the menu closes
+    bool isMenuSplitActive();    // Is a transient InputMenu 1->2 tile split currently in effect?
     void nextTile();
     void prevTile();
     bool showApplet(uint8_t appletIndex);
     bool selectTileAt(uint16_t x, uint16_t y);
     void rotate();
+    void toggleJoystick();
     void rotateJoystick(uint8_t angle = 1); // rotate 90 deg by default
     void toggleBatteryIcon();
 
@@ -116,6 +132,14 @@ class InkHUD
     void forceUpdate(Drivers::EInk::UpdateTypes type = Drivers::EInk::UpdateTypes::UNSPECIFIED, bool all = false,
                      bool async = true);
     void awaitUpdate();
+    bool updatePending(); // Display update queued or currently running?
+
+#if defined(T_DECK_MAX)
+    // Silent mode's one exception: Events::onScreenPower sets this around the awake->asleep
+    // indicator stamp, so the moon/lock cluster still lands on the panel before sleep while
+    // every other asleep-time update is dropped (see the gate in InkHUD.cpp).
+    bool silentStampBypass = false;
+#endif
 
     // (Re)configuring WindowManager
 

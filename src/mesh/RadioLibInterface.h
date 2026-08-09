@@ -50,6 +50,11 @@ class STM32WLx_ModuleWrapper : public STM32WLx_Module
 };
 #endif
 
+// SX126x RX duty-cycle sniff depth (startReceiveDutyCycleAuto minSymbols): 8 = conservative
+// default, 4 = eco sniffing (longer radio sleeps, weak-RX risk). Runtime-tunable from the
+// InkHUD Hardware menu ("RX Sniff Eco").
+extern uint8_t sx126xRxMinSymbols;
+
 class RadioLibInterface : public RadioInterface, protected concurrency::NotifiedWorkerThread
 {
     MeshPacketQueue txQueue = MeshPacketQueue(MAX_TX_QUEUE);

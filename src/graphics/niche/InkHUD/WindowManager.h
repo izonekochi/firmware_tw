@@ -32,6 +32,9 @@ class WindowManager
     bool selectTileAt(uint16_t x, uint16_t y);
     Applet *getActiveApplet();
     void openMenu();
+#if defined(MOD_INPUT_MENU)
+    void openInputMenu(); // IME driving the focused applet (transient split on 1-tile layouts)
+#endif
     void openAlignStick();
     void openAppSwitcher();
     void openKeyboard();
@@ -49,6 +52,8 @@ class WindowManager
 
     void changeLayout();           // Change tile layout or count
     void changeActivatedApplets(); // Change which applets are activated
+    void restoreFromMenuSplit();   // Merge the transient InputMenu 1->2 split back to the real tile count
+    bool isMenuSplitActive() const { return menuSplitActive; }
 
     // - called during the rendering operation
 
@@ -74,6 +79,13 @@ class WindowManager
 
     std::vector<Tile *> userTiles; // Tiles which can host user applets
     bool keyboardOpen = false;
+
+    // Transient 1->2 tile split while the InputMenu is open over a controllable applet (e.g. NavMap), so the
+    // working applet stays visible beside the menu instead of being masked. Merged back when the menu closes.
+    // Runtime-only, mirroring keyboardOpen: settings->userTiles.count is bumped to 2 for the duration and
+    // restored on close, so the user's real layout preference is never persisted as 2.
+    bool menuSplitActive = false;
+    uint8_t savedUserTileCount = 1;
 
     // For convenience
     InkHUD *inkhud = nullptr;

@@ -5,6 +5,7 @@
 // Mark the time when searching for GPS position begins
 void GPSUpdateScheduling::informSearching()
 {
+    searching = true;
     searchStartedMs = millis();
 }
 
@@ -12,6 +13,7 @@ void GPSUpdateScheduling::informSearching()
 // then update the predicted lock-time
 void GPSUpdateScheduling::informGotLock()
 {
+    searching = false;
     searchEndedMs = millis();
     LOG_DEBUG("Took %us to get lock", (searchEndedMs - searchStartedMs) / 1000);
     updateLockTimePrediction();
@@ -24,6 +26,7 @@ void GPSUpdateScheduling::informGotLock()
 // down() to fall into GPS_IDLE, leaving the chip awake on subsequent indoor cycles.
 void GPSUpdateScheduling::informSearchFailed()
 {
+    searching = false;
     searchEndedMs = millis();
     consecutiveFailures++;
     LOG_DEBUG("GPS search ended without fix after %us (consecutive failures: %u)", (searchEndedMs - searchStartedMs) / 1000,
@@ -34,6 +37,7 @@ void GPSUpdateScheduling::informSearchFailed()
 // When re-enabling GPS with user button.
 void GPSUpdateScheduling::reset()
 {
+    searching = false;
     searchStartedMs = 0;
     searchEndedMs = 0;
     searchCount = 0;
@@ -80,8 +84,12 @@ uint32_t GPSUpdateScheduling::msUntilNextSearch()
 // Used to abort a search in progress, if it runs unacceptably long
 uint32_t GPSUpdateScheduling::elapsedSearchMs()
 {
-    // If searching
-    if (searchStartedMs > searchEndedMs)
+    // An explicit flag, NOT (searchStartedMs > searchEndedMs): that inference compares two
+    // absolute millis() stamps, so once millis() wraps (day 49.7) a search started after the
+    // wrap reads as "not searching", elapsed stays 0, searchedTooLong() can never end the
+    // window, and the GPS pins itself GPS_ACTIVE forever. The subtraction below is modular
+    // arithmetic and wrap-safe on its own.
+    if (searching)
         return millis() - searchStartedMs;
 
     // If not searching - 0ms. We shouldn't really consume this value
@@ -99,16 +107,55 @@ bool GPSUpdateScheduling::isUpdateDue()
 bool GPSUpdateScheduling::searchedTooLong()
 {
     constexpr uint32_t oneMinuteMs = 60UL * 1000UL;
-    constexpr uint32_t maxSearchClampMs = 15UL * oneMinuteMs;   // Hard cap: 15 minutes is always too long
-    constexpr uint32_t postFailureSearchMs = 5UL * oneMinuteMs; // Tighter dwell once we know the environment is hostile
+    constexpr uint32_t baseSearchClampMs = 15UL * oneMinuteMs;     // upstream default (4ccdd8009 / #10293)
+    constexpr uint32_t absoluteSearchClampMs = 45UL * oneMinuteMs; // never search longer than this, ever
+    constexpr uint32_t postFailureSearchMs = 5UL * oneMinuteMs;    // Tighter dwell once we know the environment is hostile
     uint32_t elapsed = elapsedSearchMs();
 
-    // Anything over 15 minutes is too long, regardless of the broadcast interval.
-    if (elapsed > maxSearchClampMs)
+    // Keep upstream's flat cap as the default, but never cap below twice this node's OWN measured lock
+    // time: a cap that sits under the real TTFF turns every search into a guaranteed failure, and the
+    // node can then never lock to clear consecutiveFailures. Raising the BASE instead would cost every
+    // never-locking node on every board double the GPS-active time (the later position_broadcast_secs
+    // test can never bind below 1h, so this cap is the only real limit), for nodes that have shown no
+    // evidence of needing it. Keying off predictedMsToGetLock self-limits the exception to nodes that
+    // have actually measured a slow lock here; it is only populated once we have measured one (from the
+    // second - the first is discarded), so a node with no measurement keeps upstream's behaviour
+    // exactly. This costs nothing on a healthy node: a successful search ends at informGotLock(), long
+    // before any cap.
+    uint32_t clampMs = baseSearchClampMs;
+    if (predictedMsToGetLock > 0 && predictedMsToGetLock < absoluteSearchClampMs) {
+        const uint32_t headroom = predictedMsToGetLock * 2; // < 90 min, cannot overflow
+        if (headroom > clampMs)
+            clampMs = headroom;
+    }
+    if (clampMs > absoluteSearchClampMs)
+        clampMs = absoluteSearchClampMs;
+
+    if (elapsed > clampMs)
         return true;
 
-    // After a prior failed search, shorten the dwell
-    if (consecutiveFailures > 0 && elapsed > postFailureSearchMs)
+    // After a prior failed search, shorten the dwell - but ONLY when we have MEASURED how long a lock
+    // takes here and that measurement comfortably fits the shortened dwell. Otherwise the shrink is
+    // self-defeating: 5 minutes is below the cold-start TTFF of a module with no soft-sleep
+    // (GPS_HARDSLEEP cuts the EN rail, so every wake loses the ephemeris and starts cold), so the
+    // first failure pins the dwell at 5 minutes, every later 5-minute cold start also fails, and
+    // consecutiveFailures can never reset - a permanent lock-out.
+    //
+    // Gate on predictedMsToGetLock, NOT on searchCount: updateLockTimePrediction() deliberately
+    // discards the first lock as unrepresentative, so predictedMsToGetLock is only populated from the
+    // SECOND lock onward. A node that has locked exactly once has searchCount == 1 but still tells us
+    // nothing about its lock time - gating on searchCount would re-arm the lock-out on the very next
+    // failure. Nodes that lock quickly and repeatedly still get the power saving; nodes whose lock is
+    // slow, rare, or never keep the full dwell (bounded by the cap above), and msUntilNextSearch()'s
+    // failure backoff remains the power lever that holds the retry cadence down.
+    //
+    // And bound how long we trust that measurement: it dates from the last SUCCESSFUL lock, so once
+    // the environment degrades (module fault, antenna, desense) a historic "locks in 90s" reading
+    // would pin every retry at a 5-minute dwell that a now-cold-and-slow module can never meet -
+    // the same permanent lock-out the measurement gate exists to prevent. After three consecutive
+    // failed shrunk dwells, treat the prediction as stale and return to the full dwell.
+    if (consecutiveFailures > 0 && consecutiveFailures <= 3 && predictedMsToGetLock > 0 &&
+        predictedMsToGetLock < postFailureSearchMs && elapsed > postFailureSearchMs)
         return true;
 
     uint32_t minimumOrConfiguredSecs =

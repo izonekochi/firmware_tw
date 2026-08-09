@@ -38,6 +38,10 @@ class TwoButton : protected concurrency::OSThread
     void setWiring(uint8_t whichButton, uint8_t pin, bool internalPullup = false);
     void setTiming(uint8_t whichButton, uint32_t debounceMs, uint32_t longpressMs);
     void setHandlerDown(uint8_t whichButton, Callback onDown);
+    // Was the current/most-recent press the one that woke the screen? Captured at the ISR
+    // (before ANY wake processing runs), so it is immune to wake-path latency - unlike any
+    // time-window heuristic. Only meaningful on builds that maintain inkhudScreenAwake.
+    bool pressBeganAsleep(uint8_t whichButton) { return buttons[whichButton].pressWhileAsleep; }
     void setHandlerShortPress(uint8_t whichButton, Callback onShortPress);
     void setHandlerLongPress(uint8_t whichButton, Callback onLongPress);
 
@@ -68,6 +72,16 @@ class TwoButton : protected concurrency::OSThread
         uint32_t longpressLength = 500;     // How long after button down to fire longpress, in ms
         volatile State state = State::REST; // Internal state
         volatile uint32_t irqAtMillis;      // millis() when button went down
+        volatile bool pressWhileAsleep = false; // captured in the ISR: was the screen asleep when this press began?
+        volatile bool releaseSeen = false;      // ISR saw a physical release edge for the CURRENT press. Poll ticks can
+                                                // stall for seconds behind blocking e-ink refreshes; without this, rapid
+                                                // clicks merged into one phantom >=2s "hold" (longpress = shutdown!) and
+                                                // short releases vanished. A press with releaseSeen can never be a hold.
+        volatile uint32_t lastReleaseMs = 0;    // ISR stamp of the most recent release edge, INCLUDING bounce re-stamps.
+                                                // A "press" edge within debounceLength of this is contact bounce, not a
+                                                // new press: the poll sets state=REST before running onShortPress, so a
+                                                // single bounce glitch registered a phantom press whose EVENT_PRESS
+                                                // re-woke the FSM right after a deliberate sleep press reached DARK.
 
         // Per-button event callbacks
         static void noop(){};

@@ -5,15 +5,35 @@
 #include "../Menu/MenuApplet.h"
 #include "../../User/ThreadedMessage/ThreadedMessageApplet.h"
 #include "../../User/Heard/HeardApplet.h"
+#include "../../User/DMChat/DMChatApplet.h"
+#include "../../User/UniChat/UniChatApplet.h"
+#include "../../User/NavMap/NavMapApplet.h"
 #include "InputMenuApplet.h"
 
+#include <cstdlib> // strtof (coordinate parse)
+
 #include "MeshService.h"
+#include "MessageStore.h" // sendText: record outgoing DMs (no local loopback exists for them)
+#include "PowerFSM.h" // T-Deck Max sleep-UX: EVENT_INPUT to re-stamp the ON timer on keyboard activity
+#include "sleep.h"    // T-Deck Max interactive-nap: tdeckMaxKbWakeUntilMs keystroke extension
 #include "Router.h"
 #include "main.h"
 
 #if defined(MOD_CJK_ENABLED)
 #include "graphics/niche/Fonts/cubicFont.h"
 #endif //defined(MOD_CJK_ENABLED)
+
+#if defined(MOD_I2C_TCA8418_KEYBOARD)
+// Concrete driver header (it includes TCA8418KeyboardBase.h itself, which has no include guard,
+// so we must not include the base directly as well): needed for clearModifiers() casts below.
+#include "input/TDeckMaxTKeyboard.h"
+// Published by the board's lateInitVariant() (extra_variants/t_deck_max/variant.cpp).
+// inkhudI2CKeyboard is the standalone driver (InputBroker is excluded in InkHUD builds).
+// Input is POLL-ONLY: KB_IRQ_PIN must never get an attachInterrupt handler (the light-sleep
+// wake arming rewrites the pin to level-low and the held-low INT line then storms the ISR -
+// see the warning in the variant file).
+TCA8418KeyboardBase *inkhudI2CKeyboard = nullptr;
+#endif //defined(MOD_I2C_TCA8418_KEYBOARD)
 
 #if defined(MOD_UART_KEYBOARD_12KEY)
 #if defined(MOD_UART_KEYBOARD_12KEY_UPSIDEDOWN)
@@ -33,37 +53,64 @@
 #endif //defined(MOD_UART_KEYBOARD_12KEY_UPSIDEDOWN)
 #endif //defined(MOD_UART_KEYBOARD_12KEY)
 
+// The T-keyboard CIM path selects the bopomofo boards keyboards[5]/[6] (selKB = bShift ? 6 : 5) on the
+// '0'/CIM toggle, but those boards are only constructed under MOD_CJK_ENABLED. Enforce the coupling so a
+// future TKey-model-without-CJK build fails to compile instead of indexing keyboards out of bounds at runtime.
+#if defined(MOD_TKEY_MODEL) && !defined(MOD_CJK_ENABLED)
+#error "The T-keyboard input model requires MOD_CJK_ENABLED (the CIM toggle selects the CJK-only keyboards[5]/[6])."
+#endif
+
 using namespace NicheGraphics;
 
 static constexpr uint8_t INPUT_TIMEOUT_SEC = 15; // How many seconds before menu auto-closes
 static constexpr uint8_t LOCK_TIMEOUT_SEC = 15;  // How many seconds before menu auto-locks
+static constexpr uint16_t COMBO_TAP_WINDOW_MS = 350; // Grove 12-key: per-tap window for the single/double/triple combo decoder
 
 InkHUD::InputMenuApplet::InputMenuApplet() : concurrency::OSThread("InputMenuApplet")
 {
-#if defined(MOD_UART_KEYBOARD_12KEY) || defined(MOD_UART_T_KEYBOARD)
+#if defined(MOD_UART_KEYBOARD_12KEY) || defined(MOD_UART_T_KEYBOARD) || defined(MOD_I2C_TCA8418_KEYBOARD)
     OSThread::setIntervalFromNow(500);
-#else //!(defined(MOD_UART_KEYBOARD_12KEY) || defined(MOD_UART_T_KEYBOARD))
+#else //!(defined(MOD_UART_KEYBOARD_12KEY) || defined(MOD_UART_T_KEYBOARD) || defined(MOD_I2C_TCA8418_KEYBOARD))
     OSThread::disable();
-#endif //defined(MOD_UART_KEYBOARD_12KEY) || defined(MOD_UART_T_KEYBOARD)
+#endif //defined(MOD_UART_KEYBOARD_12KEY) || defined(MOD_UART_T_KEYBOARD) || defined(MOD_I2C_TCA8418_KEYBOARD)
 
-#if defined(MOD_UART_T_KEYBOARD) // BBQ10-specific keyboard
-    if (true) { // function keyboard (0)
+#if defined(MOD_TKEY_MODEL) // BBQ10-layout keyboards (UART T-keyboard / T-Deck Max TCA8418)
+    if (true) { // function keyboard (0): full 10x3, mirroring the physical alt layer 1:1
+        // The right half (cols 5-9) keeps the legacy 5x3 assignments at their original physical
+        // positions. The left half adds a second arrow cluster at the T-Deck Max printed alt
+        // keycap positions (↑ on E, ← on S, → on F, ↓ on X) plus Esc-to-close on Q; unlabeled
+        // cells are funcCode -1 no-ops, free for future mappings.
         Keyboard kb;
         std::get<0>(kb) = "Fn";
         std::get<1>(kb).emplace_back(std::vector<Key>());
+        std::get<1>(kb).back().emplace_back("Esc", 9);
+        std::get<1>(kb).back().emplace_back("", -1);
+        std::get<1>(kb).back().emplace_back("↑", 2);
+        std::get<1>(kb).back().emplace_back("", -1);
+        std::get<1>(kb).back().emplace_back("", -1);
         std::get<1>(kb).back().emplace_back("🔅", 0);
         std::get<1>(kb).back().emplace_back("⏮", 1);
         std::get<1>(kb).back().emplace_back("↑", 2);
         std::get<1>(kb).back().emplace_back("↕", 3);
         std::get<1>(kb).back().emplace_back("off", 4);
         std::get<1>(kb).emplace_back(std::vector<Key>());
+        std::get<1>(kb).back().emplace_back("", -1);
+        std::get<1>(kb).back().emplace_back("←", 6);
+        std::get<1>(kb).back().emplace_back("<->", 15); // toggle focused tile (wraps; for the 2-tile split)
+        std::get<1>(kb).back().emplace_back("→", 8);
+        std::get<1>(kb).back().emplace_back("", -1);
         std::get<1>(kb).back().emplace_back("🔆", 5);
         std::get<1>(kb).back().emplace_back("←", 6);
         std::get<1>(kb).back().emplace_back("↓", 7);
         std::get<1>(kb).back().emplace_back("→", 8);
         std::get<1>(kb).back().emplace_back("✖", 9);
         std::get<1>(kb).emplace_back(std::vector<Key>());
-        std::get<1>(kb).back().emplace_back("☀", 10);
+        std::get<1>(kb).back().emplace_back("", -1);
+        std::get<1>(kb).back().emplace_back("", -1);
+        std::get<1>(kb).back().emplace_back("↓", 7);
+        std::get<1>(kb).back().emplace_back("", -1);
+        std::get<1>(kb).back().emplace_back("Vib", 16); // alt+V: vibration policy All -> DMs -> Off
+        std::get<1>(kb).back().emplace_back("☀", 10);   // alt+B: e-ink frontlight cycle (now wired)
         std::get<1>(kb).back().emplace_back("Ch", 11);
         std::get<1>(kb).back().emplace_back("⚙", 12);
         std::get<1>(kb).back().emplace_back("@", 13);
@@ -282,9 +329,9 @@ InkHUD::InputMenuApplet::InputMenuApplet() : concurrency::OSThread("InputMenuApp
         std::get<1>(kb).back().emplace_back("ㄥ", 32);
         std::get<1>(kb).back().emplace_back("ㄦ", 33);
         std::get<1>(kb).back().emplace_back("", 46);
-        std::get<1>(kb).back().emplace_back("ˇ", 16);
-        std::get<1>(kb).back().emplace_back("ˋ", 17);
-        std::get<1>(kb).back().emplace_back("˙", 18);
+        std::get<1>(kb).back().emplace_back("ˇ", 39);
+        std::get<1>(kb).back().emplace_back("ˋ", 40);
+        std::get<1>(kb).back().emplace_back("˙", 41);
         std::get<1>(kb).back().emplace_back("⬅", 42);
         std::get<1>(kb).emplace_back(std::vector<Key>());
         std::get<1>(kb).back().emplace_back("⇒", 43);
@@ -299,9 +346,44 @@ InkHUD::InputMenuApplet::InputMenuApplet() : concurrency::OSThread("InputMenuApp
         std::get<1>(kb).back().emplace_back("✔", 52);
         keyboards.emplace_back(kb);
     }
+    if (true) { // full bopomofo keyboard (7): every Zhuyin symbol + tones on ONE board, for
+                // on-screen (touch / cursor) composing. The physical CIM path keeps using the
+                // half-mapped boards 5/6 (selKB is re-derived from the modifiers on every key),
+                // but both feed the same compose state (currentCIM/currentCIMKeys/candidates),
+                // so hardware keys and on-screen picks can be mixed mid-syllable. Layout mirrors
+                // the generic (non-TKey) bopomofo board; punctuation uses fresh codes 53-55 to
+                // stay clear of the TKey control codes (42 ⬅ / 43 ⇒ / 44-46 fillers).
+        std::vector<std::string> strBoPoMo = {"ㄅ", "ㄆ", "ㄇ", "ㄈ", "ㄉ", "ㄊ", "ㄋ", "ㄌ", "ㄍ", "ㄎ", "ㄏ", "ㄐ", "ㄑ", "ㄒ", "ㄓ", "ㄔ", "ㄕ", "ㄖ", "ㄗ", "ㄘ", "ㄙ", "ㄚ", "ㄛ", "ㄜ", "ㄝ", "ㄞ", "ㄟ", "ㄠ", "ㄡ", "ㄢ", "ㄣ", "ㄤ", "ㄥ", "ㄦ", "ㄧ", "ㄨ", "ㄩ"};
+        Keyboard kb;
+        std::get<0>(kb) = "注";
+        std::get<1>(kb).emplace_back(std::vector<Key>());
+        std::get<1>(kb).back().emplace_back(" ", 37);
+        for (int i = 0; i < 8; i++)
+            std::get<1>(kb).back().emplace_back(strBoPoMo[i], i);
+        std::get<1>(kb).emplace_back(std::vector<Key>());
+        std::get<1>(kb).back().emplace_back("ˊ", 38);
+        for (int i = 8; i < 14; i++)
+            std::get<1>(kb).back().emplace_back(strBoPoMo[i], i);
+        std::get<1>(kb).back().emplace_back("，", 53);
+        std::get<1>(kb).back().emplace_back("。", 54);
+        std::get<1>(kb).emplace_back(std::vector<Key>());
+        std::get<1>(kb).back().emplace_back("ˇ", 39);
+        for (int i = 14; i < 21; i++)
+            std::get<1>(kb).back().emplace_back(strBoPoMo[i], i);
+        std::get<1>(kb).back().emplace_back("　", 55);
+        std::get<1>(kb).emplace_back(std::vector<Key>());
+        std::get<1>(kb).back().emplace_back("ˋ", 40);
+        for (int i = 21; i < 29; i++)
+            std::get<1>(kb).back().emplace_back(strBoPoMo[i], i);
+        std::get<1>(kb).emplace_back(std::vector<Key>());
+        std::get<1>(kb).back().emplace_back("˙", 41);
+        for (int i = 29; i < 37; i++)
+            std::get<1>(kb).back().emplace_back(strBoPoMo[i], i);
+        keyboards.emplace_back(kb);
+    }
 #endif //defined(MOD_CJK_ENABLED)
 
-#else //!defined(MOD_UART_T_KEYBOARD)
+#else //!defined(MOD_TKEY_MODEL)
     if (true) { // control keyboard
         Keyboard kb;
         std::get<0>(kb) = "Fn";
@@ -320,6 +402,12 @@ InkHUD::InputMenuApplet::InputMenuApplet() : concurrency::OSThread("InputMenuApp
         std::get<1>(kb).back().emplace_back("<->", 8);
         std::get<1>(kb).back().emplace_back("Off", 9);
         std::get<1>(kb).back().emplace_back("Menu", 10);
+        std::get<1>(kb).emplace_back(std::vector<Key>());
+        std::get<1>(kb).back().emplace_back("", -1);
+        std::get<1>(kb).back().emplace_back("1", 11);
+        std::get<1>(kb).back().emplace_back("9", 12);
+        std::get<1>(kb).back().emplace_back("17", 13);
+        std::get<1>(kb).back().emplace_back("27", 14);
         keyboards.emplace_back(kb);
     }
 
@@ -432,7 +520,7 @@ InkHUD::InputMenuApplet::InputMenuApplet() : concurrency::OSThread("InputMenuApp
     }
 #endif //defined(MOD_CJK_ENABLED)
 
-#endif //defined(MOD_UART_T_KEYBOARD)
+#endif //defined(MOD_TKEY_MODEL)
 
     if (settings->optionalMenuItems.backlight)
         backlight = Drivers::LatchingBacklight::getInstance();
@@ -445,7 +533,9 @@ InkHUD::InputMenuApplet::InputMenuApplet() : concurrency::OSThread("InputMenuApp
 #elif defined(MOD_UART_T_KEYBOARD)
     LOG_INFO("Init serial peripheral interface");
     Serial2.setPins(PIN_SERIAL2_RX, PIN_SERIAL2_TX);
-    Serial2.begin(115200, SERIAL_8N1);
+    // 921600 MUST match the keyboard firmware's KB_UART_BAUD. 8x the old 115200 -> ~60ms tile fetches and a
+    // ~2min full map upload. nRF52 UARTE1 maps this to its Baud921600 preset (core Uart.cpp baud ladder).
+    Serial2.begin(921600, SERIAL_8N1);
     Serial2.setTimeout(250);
 #endif //defined(MOD_UART_T_KEYBOARD)
 }
@@ -467,7 +557,19 @@ void InkHUD::InputMenuApplet::onForeground()
     OSThread::setIntervalFromNow(100);
     while (Serial2.available()) // empty the buffer first after being foreground
         Serial2.read();
-#else //!(defined(MOD_UART_KEYBOARD_12KEY) || defined(MOD_UART_T_KEYBOARD))
+#elif defined(MOD_I2C_TCA8418_KEYBOARD)
+    autoHideMillis = millis() + INPUT_TIMEOUT_SEC * 1000UL;
+    OSThread::setIntervalFromNow(25); // responsive typing cadence while the IME is open
+    // Discard any key events queued while we were backgrounded so the IME opens clean
+    if (inkhudI2CKeyboard) {
+        inkhudI2CKeyboard->trigger();
+        while (inkhudI2CKeyboard->hasEvent())
+            inkhudI2CKeyboard->dequeueEvent();
+        // ...and any stale held-alt/shift state from the background session (sticky sym mode
+        // deliberately survives, so the IME reopens on the board the user left it in)
+        static_cast<TDeckMaxTKeyboard *>(inkhudI2CKeyboard)->clearModifiers();
+    }
+#else //!(defined(MOD_UART_KEYBOARD_12KEY) || defined(MOD_UART_T_KEYBOARD) || defined(MOD_I2C_TCA8418_KEYBOARD))
     OSThread::setIntervalFromNow(INPUT_TIMEOUT_SEC * 1000UL);
 #endif //defined(MOD_UART_KEYBOARD_12KEY) || defined(MOD_UART_T_KEYBOARD)
     OSThread::enabled = true;
@@ -488,7 +590,16 @@ void InkHUD::InputMenuApplet::onBackground()
     // Begin the auto-lock timeout
     autoHideMillis = millis() + LOCK_TIMEOUT_SEC * 1000UL;
     OSThread::setIntervalFromNow(100);
-#else //!(defined(MOD_UART_KEYBOARD_12KEY) || defined(MOD_UART_T_KEYBOARD))
+#elif defined(MOD_I2C_TCA8418_KEYBOARD)
+    // Keep polling the keyboard while backgrounded: it drives applet navigation (arrows /
+    // enter / esc / F1) even when the IME is closed. Slower cadence to save I2C traffic.
+    OSThread::setIntervalFromNow(100);
+    // Drop any held-alt/shift state carried out of the IME session: it must not re-map the
+    // first background keypress (e.g. stale alt turning 'D' into the alt+D tile toggle).
+    // Idempotent vs a physically-held key: its release event simply finds the bit already clear.
+    if (inkhudI2CKeyboard)
+        static_cast<TDeckMaxTKeyboard *>(inkhudI2CKeyboard)->clearModifiers();
+#else //!(defined(MOD_UART_KEYBOARD_12KEY) || defined(MOD_UART_T_KEYBOARD) || defined(MOD_I2C_TCA8418_KEYBOARD))
     OSThread::disable();
 #endif //defined(MOD_UART_KEYBOARD_12KEY) || defined(MOD_UART_T_KEYBOARD)
 
@@ -500,6 +611,16 @@ void InkHUD::InputMenuApplet::onBackground()
     Tile *t = getTile();
     t->assignApplet(borrowedTileOwner); // Break our link with the tile, (and relink it with real owner, if it had one)
     borrowedTileOwner = nullptr;
+    neighborTileOwner = nullptr; // clear the neighbour reference too (symmetric with borrowedTileOwner)
+
+    // If we were opened as a transient 1->2 split (over a controllable applet in a 1-tile layout), merge the
+    // layout back now that we're closing. restoreFromMenuSplit rebuilds the tiles and renders, so return early to
+    // skip the local refresh below (avoids a double update). No re-entry: our foreground flag is already false
+    // here, so the changeLayout() it runs won't try to background us again.
+    if (inkhud->isMenuSplitActive()) {
+        inkhud->restoreFromMenuSplit();
+        return;
+    }
 
     inkhud->forceUpdate(EInk::UpdateTypes::FAST);
 }
@@ -537,7 +658,7 @@ int32_t InkHUD::InputMenuApplet::runOnce()
 {
 #if defined(MOD_UART_KEYBOARD_12KEY)
     if (isForeground()) {
-        if (millis() > autoHideMillis)
+        if ((int32_t)(millis() - autoHideMillis) > 0)
             sendToBackground();
         while (Serial2.available()) {
             autoHideMillis = millis() + INPUT_TIMEOUT_SEC * 1000UL;
@@ -546,7 +667,7 @@ int32_t InkHUD::InputMenuApplet::runOnce()
     }
     else {
 #if defined(MOD_UART_KEYBOARD_12KEY_AUTOLOCK)
-        if (millis() > autoHideMillis)
+        if ((int32_t)(millis() - autoHideMillis) > 0)
             touchLocked = true;
 #endif //defined(MOD_UART_KEYBOARD_12KEY_AUTOLOCK)
         // Combo-tap gesture decoder for the Grove 12-key capacitive pad: its BACK/ENTER keys
@@ -554,7 +675,7 @@ int32_t InkHUD::InputMenuApplet::runOnce()
         // window are synthesized here into longpress / touch-lock actions. This is a hardware
         // workaround for that specific touchpad, not a general navigation aid.
         if (comboPressCount > 0) {
-            if (millis() - comboStartMillis > comboPressCount * 350) {
+            if (millis() - comboStartMillis > comboPressCount * COMBO_TAP_WINDOW_MS) {
                 comboPressCount = 0;
                 handleBackgroundVKey(comboKeyCode);
             }
@@ -569,18 +690,18 @@ int32_t InkHUD::InputMenuApplet::runOnce()
                     comboKeyCode = code;
                     comboPressCount = 1;
                 }
-                else if (code == comboKeyCode && now - comboStartMillis <= comboPressCount * 350) {
+                else if (code == comboKeyCode && now - comboStartMillis <= comboPressCount * COMBO_TAP_WINDOW_MS) {
                     comboPressCount++;
-                    if (comboPressCount >= 2) {
-                        if (!touchLocked && comboKeyCode == KEY_TOUCH_ENTER) {
+                    // ENTER=double-tap->longpress, BACK=triple-tap->toggle touch-lock. Keep the two
+                    // mutually exclusive so ENTER's reset at count 2 can't zero the counter before a
+                    // 3rd BACK tap accumulates (that ordering left the unlock toggle unreachable).
+                    if (comboKeyCode == KEY_TOUCH_ENTER && comboPressCount >= 2) {
+                        if (!touchLocked)
                             inkhud->longpress();
-                        }
                         comboPressCount = 0;
                     }
-                    if (comboPressCount >= 3) {
-                        if (comboKeyCode == KEY_TOUCH_BACK) {
-                            touchLocked = !touchLocked;
-                        }
+                    else if (comboKeyCode == KEY_TOUCH_BACK && comboPressCount >= 3) {
+                        touchLocked = !touchLocked;
                         comboPressCount = 0;
                     }
                 }
@@ -599,11 +720,14 @@ int32_t InkHUD::InputMenuApplet::runOnce()
     return 100;
 #elif defined(MOD_UART_T_KEYBOARD)
     if (isForeground()) {
-        if (millis() > autoHideMillis) {
+        if ((int32_t)(millis() - autoHideMillis) > 0) {
             sendToBackground();
         }
         else {
-            while (Serial2.available()) {
+            // T-KB frames each event as modCode+keyCode; require both bytes so a poll landing
+            // between them can't read keyCode as -1 (0xFF) and desync. A lone stray byte is
+            // dropped by the 0x80 lead-bit check once the next full packet arrives.
+            while (Serial2.available() >= 2) {
                 autoHideMillis = millis() + INPUT_TIMEOUT_SEC * 1000UL;
                 uint8_t modCode = Serial2.read();
                 if (!(modCode & 0x80))
@@ -616,9 +740,9 @@ int32_t InkHUD::InputMenuApplet::runOnce()
         }
     }
     else {
-        if (millis() > autoHideMillis)
+        if ((int32_t)(millis() - autoHideMillis) > 0)
             touchLocked = true;
-        while (Serial2.available()) {
+        while (Serial2.available() >= 2) { // modCode+keyCode pair; wait for both (see foreground note)
             autoHideMillis = millis() + LOCK_TIMEOUT_SEC * 1000UL;
             uint8_t modCode = Serial2.read();
             if (!(modCode & 0x80))
@@ -643,6 +767,83 @@ int32_t InkHUD::InputMenuApplet::runOnce()
         }
     }
     return 100;
+#elif defined(MOD_I2C_TCA8418_KEYBOARD)
+    // I2C BBQ10-style keyboard (TCA8418). The TDeckMaxTKeyboard driver queues raw positional
+    // 2-byte (modCode, keyCode) events -- the same wire format as the UART T-keyboard -- which
+    // feed the shared handleMenuTKey/handleBackgroundTKey handlers. We poll unconditionally on
+    // the OSThread cadence (25ms foreground / 100ms background); the INT line is never wired
+    // to an ISR (see InputMenuApplet.cpp top / the variant file for the storm warning).
+#if defined(T_DECK_MAX)
+    // Screen just woke (asleep->awake edge = a BOOT press): flush anything the TCA8418 buffered
+    // while we were asleep -- including presses during light sleep, when this poll wasn't running
+    // -- so stale keystrokes don't fire the instant the screen returns. (While awake-idle in DARK
+    // the loops below already drain+discard; this catches the true-LS gap where we don't poll.)
+    static bool i2cKbWasAwake = true;
+    if (inkhudScreenAwake && !i2cKbWasAwake && inkhudI2CKeyboard) {
+        inkhudI2CKeyboard->trigger();
+        while (inkhudI2CKeyboard->hasEvent())
+            inkhudI2CKeyboard->dequeueEvent();
+        // Also drop any held-alt/shift state from keys mashed during sleep (sym mode persists)
+        static_cast<TDeckMaxTKeyboard *>(inkhudI2CKeyboard)->clearModifiers();
+    }
+    i2cKbWasAwake = inkhudScreenAwake;
+#endif
+    if (inkhudI2CKeyboard) {
+        inkhudI2CKeyboard->trigger();
+        while (inkhudI2CKeyboard->hasEvent()) {
+            // Events are queued as modCode+keyCode pairs; the 0x80 lead bit rejects a desynced
+            // stray byte (same framing rule as the UART T-keyboard path).
+            uint8_t modCode = (uint8_t)inkhudI2CKeyboard->dequeueEvent();
+            if (!(modCode & 0x80))
+                continue;
+            if (!inkhudI2CKeyboard->hasEvent())
+                break; // pairs are queued atomically, so this shouldn't happen; drop the fragment
+            uint8_t keyCode = (uint8_t)inkhudI2CKeyboard->dequeueEvent();
+#if defined(T_DECK_MAX)
+            // Sleep-UX: only act on the keyboard while the screen is logically ON (a deliberate
+            // BOOT wake, or an interactive-nap window). While the "asleep" glyph is showing --
+            // e.g. the CPU is only briefly up to service a LoRa packet-wake nap -- drain and
+            // DISCARD keys so they can't type or navigate behind a frozen e-ink frame. With the
+            // moon shown the keyboard is never a wake source either (the interactive-nap window
+            // is zeroed when the indicator is stamped), so only a BOOT press restores input.
+            if (!inkhudScreenAwake)
+                continue;
+            powerFSM.trigger(EVENT_INPUT); // awake (else we continue'd): re-stamp ON, never a wake
+            {
+                // Interactive-nap: each processed keystroke RECOUNTS the keyboard-wake window,
+                // so typing keeps the nap-between-keystrokes mode alive (variant.h / sleep.h)
+                const uint32_t until = millis() + TDECKMAX_INTERACTIVE_WINDOW_MS;
+                if ((int32_t)(until - tdeckMaxKbWakeUntilMs) > 0)
+                    tdeckMaxKbWakeUntilMs = until;
+            }
+#endif
+            if (isForeground()) {
+                autoHideMillis = millis() + INPUT_TIMEOUT_SEC * 1000UL;
+                handleMenuTKey(modCode, keyCode);
+            }
+            else if (keyCode & 0x40) {
+                if (touchLocked) {
+                    // Keyboard lock (engaged by alt+L in handleBackgroundTKey); alt+L again unlocks
+                    const bool bAlt = (modCode & 0x08);
+                    const uint8_t row = (keyCode >> 4) & 0x03;
+                    const uint8_t col = keyCode & 0xF;
+                    if (bAlt && row == 1 && col == 8) {
+                        touchLocked = false;
+                        inkhud->forceUpdate(Drivers::EInk::UpdateTypes::FAST, true); // clear the corner lock glyph
+                    }
+                }
+                else {
+                    handleBackgroundTKey(modCode, keyCode);
+                }
+            }
+        }
+    }
+    if (isForeground()) {
+        if ((int32_t)(millis() - autoHideMillis) > 0)
+            sendToBackground();
+        return 25;
+    }
+    return 100;
 #else
     sendToBackground();
     return OSThread::disable();
@@ -655,6 +856,18 @@ InkHUD::Controllable* InkHUD::InputMenuApplet::getActiveControllable() {
             const auto type = Controllable::checkControllable(app);
             if (type == Controllable::Types::ThreadedMessage) {
                 auto app1 = (ThreadedMessageApplet*)app;
+                return app1;
+            }
+            if (type == Controllable::Types::NavMap) {
+                auto app1 = (NavMapApplet*)app;
+                return app1;
+            }
+            if (type == Controllable::Types::DMChat) {
+                auto app1 = (DMChatApplet*)app;
+                return app1;
+            }
+            if (type == Controllable::Types::UniChat) {
+                auto app1 = (UniChatApplet*)app;
                 return app1;
             }
             else if (type == Controllable::Types::Heard) {
@@ -882,13 +1095,7 @@ void InkHUD::InputMenuApplet::handleBackgroundVKey(const uint8_t code) {
     case KEY_TOUCH_LEFT: // left
         LOG_INFO("Key press [left]");
         if (!touchLocked) {
-            if (settings->userTiles.count > 1) {
-                if (settings->userTiles.focused > 0)
-                    inkhud->nextTile();
-            }
-            else {
-                inkhud->prevApplet();
-            }
+            tilePrevOrApplet();
         }
         break;
     case KEY_TOUCH_DOWN: // down
@@ -902,19 +1109,13 @@ void InkHUD::InputMenuApplet::handleBackgroundVKey(const uint8_t code) {
     case KEY_TOUCH_RIGHT: // right
         LOG_INFO("Key press [right]");
         if (!touchLocked) {
-            if (settings->userTiles.count > 1) {
-                if (settings->userTiles.focused == 0)
-                    inkhud->nextTile();
-            }
-            else {
-                inkhud->nextApplet();
-            }
+            tileNextOrApplet();
         }
         break;
     }
     requestUpdate(Drivers::EInk::UpdateTypes::FAST);
 }
-#elif defined(MOD_UART_T_KEYBOARD)
+#elif defined(MOD_TKEY_MODEL)
 void InkHUD::InputMenuApplet::handleMenuTKey(const uint8_t modCode, const uint8_t keyCode)
 {
     Applet* ctrlPtr0 = nullptr;
@@ -929,12 +1130,28 @@ void InkHUD::InputMenuApplet::handleMenuTKey(const uint8_t modCode, const uint8_
         ctrlType = Controllable::checkControllable(borrowedTileOwner);
         bBorrowed = true;
     }
+    // The physical "0" key (keyCode 0x71) doubles as the English/bopomofo (CIM) switch, so the Fn symbol layer
+    // otherwise has no way to type a digit zero. Make bSym + "0" insert a literal "0" instead (plain "0" still
+    // switches CIM). Codes confirmed on hardware: "0" alone = (0x84,0x71), bSym+"0" = (0x94,0x71) -- bSym = 0x10.
+    if (keyCode == 0x71 && (modCode & 0x10)) {
+        currentInput += '0';
+        requestUpdate(Drivers::EInk::UpdateTypes::FAST);
+        return;
+    }
     if ((modCode == 0x84 && keyCode == 0) || keyCode == 0x71) { // switch english and bopomo
         keyboardCIM = !keyboardCIM;
     }
     bool bShift = (modCode & 0x03);
     bool bAlt = (modCode & 0x08);
     bool bSym = (modCode & 0x10);
+#if defined(MOD_I2C_TCA8418_KEYBOARD)
+    // Sticky sym mode (TDeckMaxTKeyboard): the 0x10 bit rides on every event while symbol mode is
+    // latched. CIM and symbol mode are mutually exclusive - a sym-flagged event while in CIM drops
+    // straight to the symbol board (mic re-enters CIM). Safe from the mic key itself: sym+mic
+    // (literal '0') already returned above, so this can't fire while typing zeros.
+    if (bSym && keyboardCIM)
+        keyboardCIM = false;
+#endif
     if (keyboardCIM) {
         selKB = bShift ? 6 : 5;
     }
@@ -951,54 +1168,7 @@ void InkHUD::InputMenuApplet::handleMenuTKey(const uint8_t modCode, const uint8_
         }
         else if (key < 42) {
             key -= 37;
-            if (currentCIMKeys.size() == 1) {
-                auto idx0 = bopomofoTable[currentCIMKeys[0]];
-                if (bopomofoTable[idx0] != -1) {
-                    for (int16_t idx1 = bopomofoTable[idx0 + key]; idx1 < bopomofoTable[idx0 + key + 1]; idx1++) {
-                        int16_t charIdx = exactIndex[bopomofoTable[idx1]];
-                        currentCIMResults.emplace_back(std::string((char*)exactMap + charIdx, (size_t)getUTF8Chars(exactMap + charIdx)));
-                    }
-                    selMode = 3;
-                    selResult = 0;
-                }
-            }
-            else if (currentCIMKeys.size() == 2) {
-                auto idx0 = bopomofoTable[currentCIMKeys[0]];
-                if (bopomofoTable[idx0] == -1)
-                    idx0++;
-                else
-                    idx0 += 6;
-                idx0 = bopomofoTable[idx0 + currentCIMKeys[1]];
-                if (bopomofoTable[idx0] != -1) {
-                    for (int16_t idx1 = bopomofoTable[idx0 + key]; idx1 < bopomofoTable[idx0 + key + 1]; idx1++) {
-                        int16_t charIdx = exactIndex[bopomofoTable[idx1]];
-                        currentCIMResults.emplace_back(std::string((char*)exactMap + charIdx, (size_t)getUTF8Chars(exactMap + charIdx)));
-                    }
-                    selMode = 3;
-                    selResult = 0;
-                }
-            }
-            else if (currentCIMKeys.size() == 3) {
-                auto idx0 = bopomofoTable[currentCIMKeys[0]];
-                if (bopomofoTable[idx0] == -1)
-                    idx0++;
-                else
-                    idx0 += 6;
-                idx0 = bopomofoTable[idx0 + currentCIMKeys[1]];
-                if (bopomofoTable[idx0] == -1)
-                    idx0++;
-                else
-                    idx0 += 6;
-                idx0 = bopomofoTable[idx0 + currentCIMKeys[2]];
-                if (bopomofoTable[idx0] != -1) {
-                    for (int16_t idx1 = bopomofoTable[idx0 + key]; idx1 < bopomofoTable[idx0 + key + 1]; idx1++) {
-                        int16_t charIdx = exactIndex[bopomofoTable[idx1]];
-                        currentCIMResults.emplace_back(std::string((char*)exactMap + charIdx, (size_t)getUTF8Chars(exactMap + charIdx)));
-                    }
-                    selMode = 3;
-                    selResult = 0;
-                }
-            }
+            lookupBopomofoCandidates(key, 0);
             currentCIM.clear();
             currentCIMKeys.clear();
             if (selMode != 3) {
@@ -1024,7 +1194,9 @@ void InkHUD::InputMenuApplet::handleMenuTKey(const uint8_t modCode, const uint8_
             selRow = -1;
         }
     };
-    if (keyboardCIM && selMode == 3) {
+    // Candidate list up: physical top row picks, regardless of the CIM toggle -- the list may
+    // have been raised by composing on the full on-screen bopomofo board (7) via touch/cursor.
+    if (selMode == 3) {
         if (keyCode & 0x40) {
             selRow = (keyCode >> 4) & 0x03;
             selCol = keyCode & 0xF;
@@ -1087,10 +1259,12 @@ void InkHUD::InputMenuApplet::handleMenuTKey(const uint8_t modCode, const uint8_
                 currentCIM.clear();
                 currentCIMKeys.clear();
                 currentCIMResults.clear();
-                if (selMode == 0x10)
-                    sendText(NODENUM_BROADCAST, std::get<1>(sendTargets.at(selTarget)), message);
-                else
-                    sendText(std::get<1>(sendTargets.at(selTarget)), 0, message);
+                if (selTarget >= 0 && selTarget < (int16_t)sendTargets.size()) { // never .at() an empty list
+                    if (selMode == 0x10)
+                        sendText(NODENUM_BROADCAST, std::get<1>(sendTargets.at(selTarget)), message);
+                    else
+                        sendText(std::get<1>(sendTargets.at(selTarget)), 0, message);
+                }
                 selMode = 2;
                 selCol = -1;
                 selRow = -1;
@@ -1105,138 +1279,31 @@ void InkHUD::InputMenuApplet::handleMenuTKey(const uint8_t modCode, const uint8_
             selRow = (keyCode >> 4) & 0x03;
             selCol = keyCode & 0xF;
             if (bAlt) {
-                if (selCol >= 5 && selCol < 10 && selRow >= 0 && selRow < 3) {
-                    auto funcCode = std::get<1>(std::get<1>(keyboards[selKB])[selRow][selCol - 5]);
+                // Fn board is a full 10x3 mirror of the typing matrix; unassigned cells carry
+                // funcCode -1 and are ignored. (Was cols 5-9 only, board index selCol-5, before
+                // the board was extended to 10 columns.)
+                if (selRow >= 0 && selRow < 3 && selCol >= 0 &&
+                    selCol < (int16_t)std::get<1>(keyboards[selKB])[selRow].size()) {
+                    auto funcCode = std::get<1>(std::get<1>(keyboards[selKB])[selRow][selCol]);
                     LOG_INFO("T-KB: funcCode=%d", (int)funcCode);
-                    if (funcCode == 0 || funcCode == 5) {
-                        if (funcCode == 0)
-                            currentKBBL = (currentKBBL < 15) ? 7 : (currentKBBL - 8);
-                        else
-                            currentKBBL = (currentKBBL > 246) ? 255 : (currentKBBL + 8);
-                        Serial2.write(0x02);
-                        Serial2.write(currentKBBL);
-                    }
-                    else if (funcCode == 1) {
-                        auto app = getActiveControllable();
-                        if (app)
-                            app->handleBack();
-                    }
-                    else if (funcCode == 2) {
-                        auto app = getActiveControllable();
-                        if (app)
-                            app->handleUp();
-                    }
-                    else if (funcCode == 3) {
-                        auto app = getActiveControllable();
-                        if (app)
-                            app->handleEnter();
-                    }
-                    else if (funcCode == 4) {
-                        LOG_INFO("Shutting down from input menu");
-                        shutdownAtMsec = millis();
-                    }
-                    else if (funcCode == 6) {
-                        if (settings->userTiles.count > 1) {
-                            if (settings->userTiles.focused > 0)
-                                inkhud->nextTile();
-                        }
-                        else {
-                            inkhud->prevApplet();
-                        }
-                    }
-                    else if (funcCode == 7) {
-                        auto app = getActiveControllable();
-                        if (app)
-                            app->handleDown();
-                    }
-                    else if (funcCode == 8) {
-                        if (settings->userTiles.count > 1) {
-                            if (settings->userTiles.focused == 0)
-                                inkhud->nextTile();
-                        }
-                        else {
-                            inkhud->nextApplet();
-                        }
-                    }
-                    else if (funcCode == 9) {
-                        sendToBackground();
-                    }
-                    else if (funcCode == 11) {
-                        sendTargets.clear();
-                        for (uint8_t i = 0; i < MAX_NUM_CHANNELS; i++) {
-                            meshtastic_Channel &channel = channels.getByIndex(i);
-                            if (!channel.has_settings || channel.role == meshtastic_Channel_Role_DISABLED)
-                                continue;
-                            sendTargets.emplace_back(std::string("CH") + std::to_string((int)channel.index) + ":" + channel.settings.name, channel.index);
-                        }
-                        selMode = 0x10;
-                        selTarget = 0;
-                    }
-                    else if (funcCode == 12) {
-                        MenuApplet *menu = (MenuApplet *)inkhud->getSystemApplet("Menu");
-                        Tile* t = getTile();
-                        sendToBackground();
-                        menu->show(t);
-                    }
-                    else if (funcCode == 13) {
-                        uint32_t nodeCount = nodeDB->getNumMeshNodes();
-                        sendTargets.clear();
-                        for (uint32_t i = 0; i < nodeCount; i++) {
-                            meshtastic_NodeInfoLite *node = nodeDB->getMeshNodeByIndex(i);
-                            if (!nodeInfoLiteIsFavorite(node))
-                                continue;
-                            if (nodeInfoLiteHasUser(node))
-                                sendTargets.emplace_back(std::string(node->long_name), node->num);
-                            else
-                                sendTargets.emplace_back(hexifyNodeNum(node->num), node->num);
-                        }
-                        selMode = 0x11;
-                        selTarget = 0;
-                    }
-                    else if (funcCode == 14) {
-                        if (ctrlPtr0 && ctrlType == Controllable::Types::ThreadedMessage) {
-                            auto ctrlPtr = (ThreadedMessageApplet*)ctrlPtr0;
-                            std::string message = currentInput;
-                            currentInput.clear();
-                            currentCIM.clear();
-                            currentCIMKeys.clear();
-                            currentCIMResults.clear();
-                            selMode = 2;
-                            selCol = -1;
-                            selRow = -1;
-                            sendText(NODENUM_BROADCAST, ctrlPtr->getChannelIndex(), message);
-                            if (bBorrowed)
-                                sendToBackground();
-                        }
-                    }
+                    if (funcCode >= 0)
+                        dispatchTKeyFunc(funcCode, ctrlPtr0, ctrlType, bBorrowed);
                 }
             }
             else {
                 if (selRow == 1 && selCol == 9) { // backspace
-                    if (keyboardCIM && !currentCIMKeys.empty()) {
-                        for (size_t pos = 0; pos < currentCIM.length(); ) {
-                            size_t numChars = getUTF8Chars((uint8_t*)currentCIM.c_str() + pos);
-                            if (numChars < 1)
-                                break;
-                            if (pos + numChars == currentCIM.length())
-                                currentCIM = currentCIM.substr(0, pos);
-                            pos += numChars;
-                        }
+                    // Pending syllable (from either the physical CIM layer or the on-screen full
+                    // bopomofo board): delete the last symbol, not the last committed character
+                    if (!currentCIMKeys.empty()) {
+                        utf8PopLast(currentCIM);
                         currentCIMKeys.pop_back();
                     }
                     else {
-                        for (size_t pos = 0; pos < currentInput.length(); ) {
-                            size_t numChars = getUTF8Chars((uint8_t*)currentInput.c_str() + pos);
-                            if (numChars < 1)
-                                break;
-                            if (pos + numChars == currentInput.length())
-                                currentInput = currentInput.substr(0, pos);
-                            pos += numChars;
-                        }
+                        utf8PopLast(currentInput);
                     }
                 }
                 else if (selRow == 2 && selCol == 9) { // return or send
-                    if (keyboardCIM && !currentCIMKeys.empty()) {
+                    if (!currentCIMKeys.empty()) {
                         // input incomplete, do nothing?
                     }
                     else {
@@ -1255,6 +1322,45 @@ void InkHUD::InputMenuApplet::handleMenuTKey(const uint8_t modCode, const uint8_
                                 if (bBorrowed)
                                     sendToBackground();
                             }
+                            else if (ctrlPtr0 && ctrlType == Controllable::Types::DMChat) {
+                                // Chat window: composed text goes as a DM to the bound peer
+                                auto ctrlPtr = (DMChatApplet*)ctrlPtr0;
+                                if (ctrlPtr->isBound()) {
+                                    std::string message = currentInput;
+                                    currentInput.clear();
+                                    currentCIM.clear();
+                                    currentCIMKeys.clear();
+                                    currentCIMResults.clear();
+                                    selMode = 2;
+                                    selCol = -1;
+                                    selRow = -1;
+                                    sendText(ctrlPtr->getPeer(), 0, message);
+                                    ctrlPtr->noteSent();
+                                    if (bBorrowed)
+                                        sendToBackground();
+                                }
+                            }
+                            else if (ctrlPtr0 && ctrlType == Controllable::Types::UniChat) {
+                                // Unified chats: send to whichever target thread is open
+                                auto ctrlPtr = (UniChatApplet*)ctrlPtr0;
+                                if (ctrlPtr->hasThreadTarget()) {
+                                    std::string message = currentInput;
+                                    currentInput.clear();
+                                    currentCIM.clear();
+                                    currentCIMKeys.clear();
+                                    currentCIMResults.clear();
+                                    selMode = 2;
+                                    selCol = -1;
+                                    selRow = -1;
+                                    if (ctrlPtr->targetIsDM())
+                                        sendText(ctrlPtr->getPeer(), 0, message);
+                                    else
+                                        sendText(NODENUM_BROADCAST, ctrlPtr->getChannelIndex(), message);
+                                    ctrlPtr->noteSent();
+                                    if (bBorrowed)
+                                        sendToBackground();
+                                }
+                            }
                         }
                         else {
                             currentInput += '\n';
@@ -1262,7 +1368,7 @@ void InkHUD::InputMenuApplet::handleMenuTKey(const uint8_t modCode, const uint8_
                     }
                 }
                 else if (selRow == 3 && selCol == 2) { // space
-                    if (keyboardCIM && !currentCIMKeys.empty()) {
+                    if (!currentCIMKeys.empty()) { // pending syllable: 1st-tone lookup (either input source)
                         // treat as first sound?
                         handleCIMKey(37);
                     }
@@ -1270,7 +1376,9 @@ void InkHUD::InputMenuApplet::handleMenuTKey(const uint8_t modCode, const uint8_
                         currentInput += ' ';
                     }
                 }
-                else if (selRow < 3) {
+                else if (selRow < 3 && selCol < (int16_t)std::get<1>(keyboards[selKB])[selRow].size()) {
+                    // selCol comes straight off the wire (keyCode & 0xF, 0..15); the typing rows hold
+                    // <=10 keys, so bound it before indexing the row (a stray col>=size would read past end).
                     if (keyboardCIM) {
                         auto key = std::get<1>(std::get<1>(keyboards[selKB])[selRow][selCol]);
                         handleCIMKey(key);
@@ -1292,9 +1400,159 @@ void InkHUD::InputMenuApplet::handleBackgroundTKey(const uint8_t modCode, const 
         const bool bAlt = (modCode & 0x08);
         const uint8_t row = (keyCode >> 4) & 0x03;
         const uint8_t col = keyCode & 0xF;
-        if (bAlt && row == 1 && col == 8)
+        if (bAlt && row == 1 && col == 8) {
             touchLocked = true;
-        else if (row == 0 && col == 0) {
+            inkhud->forceUpdate(Drivers::EInk::UpdateTypes::FAST, true); // show the corner lock glyph
+            return;
+        }
+        // alt+D "<->": toggle the focused tile (wraps), same funcCode-15 shortcut as the Fn board.
+        // Checked before the menu-first block so the alt chord isn't swallowed as a plain D=select.
+        if (bAlt && row == 1 && col == 2) {
+            if (settings->userTiles.count > 1)
+                inkhud->nextTile();
+            return;
+        }
+        // alt+A: fast internal/external LoRa antenna toggle (menu Hardware -> Ext Antenna, incl.
+        // persistence). Feedback is the corner antenna-mast glyph (shown while external).
+        if (bAlt && row == 1 && col == 0) {
+#if defined(T_DECK_MAX)
+            ((MenuApplet *)inkhud->getSystemApplet("Menu"))->quickToggleAntenna();
+            // all=true: the cluster may have SHRUNK - the applet beneath must repaint the freed span
+            inkhud->forceUpdate(Drivers::EInk::UpdateTypes::FAST, true);
+#endif
+            return;
+        }
+        // alt+H: Debug Hold fast toggle (menu Hardware -> Debug Hold): session-only stay-awake
+        // hold + fast Info-applet refresh. Feedback is the corner eye glyph (BatteryIconApplet);
+        // the Hardware-page checkbox tracks the global directly.
+        if (bAlt && row == 1 && col == 5) {
+#if defined(T_DECK_MAX)
+            tdeckmaxDebugHold = !tdeckmaxDebugHold;
+            inkhud->forceUpdate(Drivers::EInk::UpdateTypes::FAST, true); // all: see alt+A note
+#endif
+            return;
+        }
+        // alt+B: e-ink frontlight cycle (the Fn board's ☀ position); persists via TDeckMaxPrefs.
+        if (bAlt && row == 2 && col == 5) {
+#if defined(T_DECK_MAX)
+            ((MenuApplet *)inkhud->getSystemApplet("Menu"))->quickCycleFrontlight();
+#endif
+            return;
+        }
+        // alt+N: keyboard backlight toggle (beside alt+B = frontlight). Session-only - the
+        // same KB_BL pin the Fn board's 🔅/🔆 keys drive, now reachable without the IME open.
+        if (bAlt && row == 2 && col == 6) {
+#if defined(MOD_I2C_TCA8418_KEYBOARD)
+            if (inkhudI2CKeyboard) {
+                auto *kb = (TDeckMaxTKeyboard *)inkhudI2CKeyboard;
+                kb->setBacklight(!kb->getBacklight());
+            }
+#endif
+            return;
+        }
+        // alt+S: silent mode toggle (menu Hardware -> Silent Mode): super power saving - while
+        // asleep the e-ink never refreshes, messages are only recorded. Feedback is the corner
+        // moon glyph. (Plain S = down-nav, untouched; in the IME alt+S stays the Fn <- arrow.)
+        if (bAlt && row == 1 && col == 1) {
+#if defined(T_DECK_MAX)
+            ((MenuApplet *)inkhud->getSystemApplet("Menu"))->quickToggleSilent();
+            inkhud->forceUpdate(Drivers::EInk::UpdateTypes::FAST, true); // all: see alt+A note
+#endif
+            return;
+        }
+        // alt+V: vibration policy cycle All -> DMs only -> Off (menu Hardware -> Vibration).
+        // Feedback is the corner bell glyph (shown when not-All).
+        if (bAlt && row == 2 && col == 4) {
+#if defined(T_DECK_MAX)
+            ((MenuApplet *)inkhud->getSystemApplet("Menu"))->quickCycleVibra();
+            inkhud->forceUpdate(Drivers::EInk::UpdateTypes::FAST, true);
+#endif
+            return;
+        }
+        // alt+F: force a FULL e-ink refresh of the whole screen - instant deghost for the
+        // gradual fade partial refreshes leave behind, and it pays back FULL-refresh debt.
+        // (With the IME open, alt+F stays the Fn -> arrow.)
+        if (bAlt && row == 1 && col == 3) {
+            inkhud->forceUpdate(Drivers::EInk::UpdateTypes::FULL, true);
+            return;
+        }
+        // alt+G: fast GPS toggle - identical effect to menu Node Config -> Position -> GPS,
+        // including driving the XL9555 GPS rail immediately. Feedback is the corner GPS reticle
+        // (BatteryIconApplet), so force a repaint of the current frame.
+        if (bAlt && row == 1 && col == 4) {
+#if !MESHTASTIC_EXCLUDE_GPS && HAS_GPS
+            if (config.position.gps_mode == meshtastic_Config_PositionConfig_GpsMode_DISABLED)
+                config.position.gps_mode = meshtastic_Config_PositionConfig_GpsMode_ENABLED;
+            else if (config.position.gps_mode == meshtastic_Config_PositionConfig_GpsMode_ENABLED)
+                config.position.gps_mode = meshtastic_Config_PositionConfig_GpsMode_DISABLED;
+            else
+                return; // NOT_PRESENT: nothing to toggle
+            nodeDB->saveToDisk(SEGMENT_CONFIG);
+            service->reloadConfig(SEGMENT_CONFIG);
+#if defined(T_DECK_MAX)
+            tdeckmaxApplyGpsRail(); // power/cut the rail now, not at next reboot
+#endif
+            inkhud->forceUpdate(Drivers::EInk::UpdateTypes::FAST, true); // all: see alt+A note
+#endif
+            return;
+        }
+        // (The old R/T/Y bezel-replacement mappings are gone - user decision 2026-08-07: W/S
+        // scroll, A/D switch tile/applet, and R is now the "other menu" key, see below.)
+        // Menu-first: while the menu is open, QWEASD navigate it instead of the Controllable applet.
+        // Direct handler calls (not inkhud->navUp etc.) skip the joystick rotation remap, which would
+        // misdirect keys with fixed labels on a rotated display.
+        MenuApplet *menu = (MenuApplet *)inkhud->getSystemApplet("Menu");
+        if (menu->isForeground() && ((row <= 1 && col <= 2) || (row == 2 && col == 9))) {
+            if (row == 2 && col == 9) // physical Enter: select (same as E/D)
+                menu->onNavRight();
+            else if (row == 0 && col == 0) // Q: exit menu
+                menu->onExitShort();
+            else if (row == 0 && col == 1) { // W: previous item
+                menu->onNavUp();
+                menu->showCursorHighlight(); // key nav: cursor must be VISIBLE (onNavUp hides it
+                                             // on this board's touch-first layout - swipe UX)
+            }
+            else if (row == 0 && col == 2) // E: select
+                menu->onNavRight();
+            else if (row == 1 && col == 0) // A: previous menu page
+                menu->onNavLeft();
+            else if (row == 1 && col == 1) { // S: next item
+                menu->onNavDown();
+                menu->showCursorHighlight(); // see W above
+            }
+            else // D: select
+                menu->onNavRight();
+            return;
+        }
+        // Shared by E and the physical Enter key: the applet's own action first (e.g. Heard
+        // select-mode opens a DM chat, UniChat list picks a thread); the fallback is
+        // context-aware (user decision 2026-08-07): chat-style applets (Chats/DM/BBS) open the
+        // IME to compose straight away, everything else (NavMap, Heard, Info...) opens the
+        // settings menu. R is the mirror image, see below.
+        // Type-check via the tile's Applet pointer (the registry key); a Controllable* can't be
+        // downcast through the virtual base.
+        auto focusedWantsIme = [&]() -> bool {
+            Applet *focused = inkhud->getFocusedTile() ? inkhud->getFocusedTile()->getAssignedApplet() : nullptr;
+            const auto ctype = Controllable::checkControllable(focused);
+            if (ctype == Controllable::Types::UniChat)
+                return ((UniChatApplet *)focused)->hasThreadTarget();
+            if (ctype == Controllable::Types::DMChat)
+                return ((DMChatApplet *)focused)->isBound();
+            if (ctype == Controllable::Types::ThreadedMessage)
+                return true;
+            return false;
+        };
+        auto enterAction = [&]() {
+            LOG_INFO("Key press [enter]");
+            auto app = getActiveControllable();
+            if (!(app && app->handleEnter())) {
+                if (focusedWantsIme())
+                    inkhud->openInputMenu();
+                else
+                    inkhud->openMenu();
+            }
+        };
+        if (row == 0 && col == 0) {
             LOG_INFO("Key press [back]");
             auto app = getActiveControllable();
             if (app)
@@ -1307,24 +1565,34 @@ void InkHUD::InputMenuApplet::handleBackgroundTKey(const uint8_t modCode, const 
                 app->handleUp();
         }
         else if (row == 0 && col == 2) {
-            LOG_INFO("Key press [enter]");
-            auto app = getActiveControllable();
-            if (app) {
-                if (!app->handleEnter())
-                    inkhud->nextApplet();
+            enterAction(); // E: applet action, else IME (chats/BBS) / menu (everything else)
+        }
+        else if (row == 0 && col == 3) {
+            // R: the "other menu" - the mirror image of Enter's context default. On chat-style
+            // pages (where Enter = IME) R opens the settings menu; everywhere else (where Enter
+            // = menu) R opens the IME directly - e.g. instant typed search on NavMap / Heard.
+            // Inert while a system applet (menu etc.) is consuming input: stacking the IME over
+            // an open menu would fight the MENU_OPEN_INPUT deferred-handoff path.
+            bool sysInput = false;
+            for (SystemApplet *sa : inkhud->systemApplets) {
+                if (sa->handleInput) {
+                    sysInput = true;
+                    break;
+                }
             }
-            else {
-                inkhud->nextApplet();
+            if (!sysInput) {
+                LOG_INFO("Key press [other-menu]");
+                if (focusedWantsIme())
+                    inkhud->openMenu();
+                else
+                    inkhud->openInputMenu();
             }
         }
         else if (row == 1 && col == 0) {
             LOG_INFO("Key press [left]");
-            if (settings->userTiles.count > 1) {
-                if (settings->userTiles.focused > 0)
-                    inkhud->nextTile();
-            }
-            else {
-                inkhud->prevApplet();
+            auto app = getActiveControllable();
+            if (!(app && app->handleLeft())) { // let a foreground applet (e.g. NavMap) consume left; else switch
+                tilePrevOrApplet();
             }
         }
         else if (row == 1 && col == 1) {
@@ -1334,20 +1602,147 @@ void InkHUD::InputMenuApplet::handleBackgroundTKey(const uint8_t modCode, const 
                 app->handleDown();
         }
         else if (row == 1 && col == 2) {
-            if (settings->userTiles.count > 1) {
-                if (settings->userTiles.focused == 0)
-                    inkhud->nextTile();
-            }
-            else {
-                inkhud->nextApplet();
+            auto app = getActiveControllable();
+            if (!(app && app->handleRight())) { // let a foreground applet consume right; else switch
+                tileNextOrApplet();
             }
         }
         else if (row == 2 && col == 7) {
             inkhud->openMenu();
         }
+        else if (row == 1 && col == 9) {
+            inkhud->shortpress();
+        }
+        else if (row == 2 && col == 9) {
+            enterAction(); // physical Enter: same as E (was inkhud->longpress())
+        }
     }
 }
-#endif //defined(MOD_UART_T_KEYBOARD)
+#endif //defined(MOD_TKEY_MODEL)
+
+// Direct touch on the IME. Regions are computed with the same math as onRender:
+//   [board cells]     tap -> selRow/selCol -> handleKeyboardPress (types / composes / Fn dispatch)
+//   [bar above board] selMode 3 -> tap picks a candidate; composing -> ignored; selMode 0 -> tap
+//                     switches boards; otherwise a tap restores the board tab bar
+//   [target list]     tap selects an entry (commit stays on ✔/Enter -- no accidental sends)
+//   [anywhere else]   consumed with no action, so a stray tap can't fall through to the
+//                     tap-to-focus / short-press fallbacks while composing
+// Every path shares state with the physical-key handlers, so hardware and touch input can be
+// freely mixed -- e.g. compose Zhuyin by tapping the full bopomofo board (7), then pick the
+// candidate with the physical top row, or vice versa.
+bool InkHUD::InputMenuApplet::onTouchPoint(uint16_t x, uint16_t y, bool longPress)
+{
+    if (!getTile())
+        return false;
+    const uint16_t tileL = getTile()->getLeft();
+    const uint16_t tileT = getTile()->getTop();
+    if (x < tileL || x >= tileL + getTile()->getWidth() || y < tileT || y >= tileT + getTile()->getHeight())
+        return false; // outside our tile: leave it to other handlers (e.g. tap-to-focus)
+
+    const int16_t lx = (int16_t)(x - tileL);
+    const int16_t ly = (int16_t)(y - tileT);
+    const int16_t kbKeyHeight = fontSmall.lineHeight() + 1;
+
+    noteUserActivity();
+
+    // Send-target picker: tap highlights an entry; committing stays on ✔/Enter
+    if (selMode == 0x10 || selMode == 0x11) {
+        constexpr int16_t padDivH = 2;
+        const int16_t headerDivY = padDivH + fontSmall.lineHeight() + padDivH - 1;
+        const int16_t itemHeight = fontSmall.lineHeight() + 1;
+        if (ly > headerDivY) {
+            const int16_t showItems = (height() - headerDivY - 1) / itemHeight;
+            int16_t startIdx = 0;
+            if (selTarget != -1 && (int16_t)sendTargets.size() > showItems) {
+                startIdx = selTarget - showItems + 1; // same scroll window as onRender
+                if (startIdx < 0)
+                    startIdx = 0;
+            }
+            const int16_t idx = startIdx + (ly - headerDivY - 1) / itemHeight;
+            if (idx >= 0 && idx < (int16_t)sendTargets.size()) {
+                selTarget = idx;
+                requestUpdate(Drivers::EInk::UpdateTypes::FAST);
+            }
+        }
+        return true;
+    }
+
+    if (selKB >= 0 && selKB < (int16_t)keyboards.size()) {
+        const auto &rows = std::get<1>(keyboards[selKB]);
+        const int16_t kbRows = (int16_t)rows.size();
+        const int16_t kbBoardHeight = kbKeyHeight * kbRows + 1;
+        const int16_t kbTop = height() - kbBoardHeight;
+        const int16_t kbBarTop = kbTop - kbKeyHeight;
+
+        if (ly >= kbTop) { // board cell -> press it
+            int16_t row = (ly - kbTop) / kbKeyHeight;
+            if (row >= kbRows)
+                row = kbRows - 1;
+            const int16_t cols = (int16_t)rows[row].size();
+            if (cols == 0)
+                return true;
+            int16_t col = (int16_t)((int32_t)lx * cols / width());
+            if (col >= cols)
+                col = cols - 1;
+            selRow = row;
+            selCol = col;
+            handleKeyboardPress();
+            requestUpdate(Drivers::EInk::UpdateTypes::FAST);
+            return true;
+        }
+
+        if (ly >= kbBarTop) { // the bar strip above the board
+            if (selMode == 3) { // candidate bar: tap picks (same paging as the physical top row)
+                const int16_t count = (int16_t)currentCIMResults.size();
+                int16_t base = (selResult != -1 && count > 10) ? (selResult - selResult % 10) : 0;
+                int16_t idx = (int16_t)((int32_t)lx * 10 / width());
+                if (idx > 9)
+                    idx = 9;
+                if (base + idx < count) {
+                    currentInput += currentCIMResults[base + idx];
+                    currentCIM.clear();
+                    currentCIMKeys.clear();
+                    currentCIMResults.clear();
+                    selMode = 1;
+                    selRow = -1;
+                    selCol = -1;
+                    requestUpdate(Drivers::EInk::UpdateTypes::FAST);
+                }
+                return true;
+            }
+            if (!currentCIM.empty())
+                return true; // compose text showing: nothing to tap
+            if (selMode == 0) { // board tab bar visible: tap switches boards
+                const int16_t kbCount = (int16_t)keyboards.size();
+                int16_t idx = (int16_t)((int32_t)lx * kbCount / width());
+                if (idx >= kbCount)
+                    idx = kbCount - 1;
+                selKB = idx;
+                selRow = -1;
+                selCol = -1;
+            } else {
+                selMode = 0; // bar currently hidden: restore it so the next tap can switch boards
+            }
+            requestUpdate(Drivers::EInk::UpdateTypes::FAST);
+            return true;
+        }
+
+        return true; // composed-text area: consume, no action
+    }
+
+    // No board open: just the tab bar along the bottom edge
+    if (selMode == 0 && ly >= height() - kbKeyHeight - 1) {
+        const int16_t kbCount = (int16_t)keyboards.size();
+        int16_t idx = (int16_t)((int32_t)lx * kbCount / width());
+        if (idx >= kbCount)
+            idx = kbCount - 1;
+        selKB = idx;
+        selRow = -1;
+        selCol = -1;
+        requestUpdate(Drivers::EInk::UpdateTypes::FAST);
+    }
+    return true;
+}
 
 void InkHUD::InputMenuApplet::onRender(bool full)
 {
@@ -1364,8 +1759,12 @@ void InkHUD::InputMenuApplet::onRender(bool full)
         int16_t itemHeight = fontSmall.lineHeight() + 1;
         int16_t showItems = (height() - headerDivY - 1) / itemHeight;
         int16_t startIdx = 0;
-        if (selTarget!= -1 && (int16_t)sendTargets.size() > showItems) {
+        if (selTarget != -1 && (int16_t)sendTargets.size() > showItems) {
+            // Scroll so the selected target stays visible; clamp to 0 when it is within the first
+            // window (selTarget < showItems would otherwise make startIdx negative -> OOB read).
             startIdx = selTarget - showItems + 1;
+            if (startIdx < 0)
+                startIdx = 0;
         }
         for (int i = 0; i < showItems && startIdx + i < (int)sendTargets.size(); i++) {
             printAt(0, headerDivY + 1 + itemHeight * i, std::get<0>(sendTargets[startIdx + i]));
@@ -1378,7 +1777,6 @@ void InkHUD::InputMenuApplet::onRender(bool full)
     }
     else {
         std::string bodyText = parse(currentInput);
-        uint16_t bodyH = getWrappedTextHeight(0, width(), bodyText);
         printWrapped(0, headerDivY, width(), bodyText);
         if (selMode == 0 && selKB == -1) {
             int16_t kbKeyHeight = fontSmall.lineHeight() + 1;
@@ -1419,20 +1817,20 @@ void InkHUD::InputMenuApplet::onRender(bool full)
                         drawPixel(kbKeyRight, y, BLACK);
                 }
             }
-#if defined(MOD_UART_T_KEYBOARD)
-            else if (keyboardCIM && !currentCIM.empty()) {
-#else //!defined(MOD_UART_T_KEYBOARD)
+#if defined(MOD_TKEY_MODEL)
+            else if ((keyboardCIM || selKB == 5 || selKB == 6 || selKB == 7) && !currentCIM.empty()) {
+#else //!defined(MOD_TKEY_MODEL)
             else if (selKB == 4 && !currentCIM.empty()) {
-#endif //defined(MOD_UART_T_KEYBOARD)
+#endif //defined(MOD_TKEY_MODEL)
                 for (int16_t x = 0; x < width(); x += 2)
                     drawPixel(x, kbBarTop, BLACK);
                 printAt(0, kbBarTop + 1, currentCIM);
             }
-#if defined(MOD_UART_T_KEYBOARD)
-            else if (keyboardCIM && selMode == 3) {
-#else //!defined(MOD_UART_T_KEYBOARD)
+#if defined(MOD_TKEY_MODEL)
+            else if ((keyboardCIM || selKB == 5 || selKB == 6 || selKB == 7) && selMode == 3) {
+#else //!defined(MOD_TKEY_MODEL)
             else if (selKB == 4 && selMode == 3) {
-#endif //defined(MOD_UART_T_KEYBOARD)
+#endif //defined(MOD_TKEY_MODEL)
                 for (int16_t x = 0; x < width(); x += 2)
                     drawPixel(x, kbBarTop, BLACK);
                 for (int16_t y = kbBarTop + 2; y < kbBarTop + kbKeyHeight - 1; y += 2)
@@ -1459,11 +1857,11 @@ void InkHUD::InputMenuApplet::onRender(bool full)
                 int16_t kbKeyRight = (int)(width() - 1) * (selKB + 1) / kbKeyboards;
                 drawRect(kbKeyLeft, kbBarTop, kbKeyRight - kbKeyLeft + 1, kbKeyHeight + 1, BLACK);
             }
-#if defined(MOD_UART_T_KEYBOARD)
-            else if (keyboardCIM && selMode == 3 && selResult != -1) {
-#else //!defined(MOD_UART_T_KEYBOARD)
+#if defined(MOD_TKEY_MODEL)
+            else if ((keyboardCIM || selKB == 5 || selKB == 6 || selKB == 7) && selMode == 3 && selResult != -1) {
+#else //!defined(MOD_TKEY_MODEL)
             else if (selKB == 4 && selMode == 3 && selResult != -1) {
-#endif //defined(MOD_UART_T_KEYBOARD)
+#endif //defined(MOD_TKEY_MODEL)
                 int16_t resultKeyLeft = (int)(width() - 1) * (selResult % 10) / 10;
                 int16_t resultKeyRight = (int)(width() - 1) * (selResult % 10 + 1) / 10;
                 drawRect(resultKeyLeft, kbBarTop, resultKeyRight - resultKeyLeft + 1, kbKeyHeight + 1, BLACK);
@@ -1496,11 +1894,11 @@ void InkHUD::InputMenuApplet::onRender(bool full)
 
 void InkHUD::InputMenuApplet::noteUserActivity()
 {
-#if defined(MOD_UART_KEYBOARD_12KEY) || defined(MOD_UART_T_KEYBOARD)
+#if defined(MOD_UART_KEYBOARD_12KEY) || defined(MOD_UART_T_KEYBOARD) || defined(MOD_I2C_TCA8418_KEYBOARD)
     autoHideMillis = millis() + INPUT_TIMEOUT_SEC * 1000UL;
-#else //!(defined(MOD_UART_KEYBOARD_12KEY) || defined(MOD_UART_T_KEYBOARD))
+#else //!(defined(MOD_UART_KEYBOARD_12KEY) || defined(MOD_UART_T_KEYBOARD) || defined(MOD_I2C_TCA8418_KEYBOARD))
     OSThread::setIntervalFromNow(INPUT_TIMEOUT_SEC * 1000UL);
-#endif //defined(MOD_UART_KEYBOARD_12KEY) || defined(MOD_UART_T_KEYBOARD)
+#endif //defined(MOD_UART_KEYBOARD_12KEY) || defined(MOD_UART_T_KEYBOARD) || defined(MOD_I2C_TCA8418_KEYBOARD)
 }
 
 int16_t &InkHUD::InputMenuApplet::currentCursor()
@@ -1553,6 +1951,13 @@ void InkHUD::InputMenuApplet::cursorStep(int delta)
 // Mirrors the "cursor != -1" branch of the original onButtonLongPress.
 void InkHUD::InputMenuApplet::levelActivate()
 {
+    // -1 sentinel = "nothing selected": activating steps back instead, like onButtonLongPress.
+    // Also prevents indexing keyboards/candidates/targets with -1 (reachable via onNavRight).
+    if (currentCursor() == -1) {
+        levelBack();
+        return;
+    }
+
     if (selMode == 0) {
         selMode = 1;
         selRow = 0;
@@ -1678,7 +2083,8 @@ void InkHUD::InputMenuApplet::handleKeyboardPress()
         currentCIM.clear();
         currentCIMKeys.clear();
         currentCIMResults.clear();
-        sendText(NODENUM_BROADCAST, std::get<1>(sendTargets.at(selTarget)), message);
+        if (selTarget >= 0 && selTarget < (int16_t)sendTargets.size()) // never .at() an empty list
+            sendText(NODENUM_BROADCAST, std::get<1>(sendTargets.at(selTarget)), message);
         selMode = 1;
 #if !defined(MOD_UART_KEYBOARD_12KEY)
         selCol = -1;
@@ -1691,7 +2097,8 @@ void InkHUD::InputMenuApplet::handleKeyboardPress()
         currentCIM.clear();
         currentCIMKeys.clear();
         currentCIMResults.clear();
-        sendText(std::get<1>(sendTargets.at(selTarget)), 0, message);
+        if (selTarget >= 0 && selTarget < (int16_t)sendTargets.size()) // never .at() an empty list
+            sendText(std::get<1>(sendTargets.at(selTarget)), 0, message);
         selMode = 1;
 #if !defined(MOD_UART_KEYBOARD_12KEY)
         selCol = -1;
@@ -1700,6 +2107,11 @@ void InkHUD::InputMenuApplet::handleKeyboardPress()
     }
     else {
         if (selKB == 0) {
+#if defined(MOD_TKEY_MODEL)
+            const auto funcCode = std::get<1>(std::get<1>(keyboards[selKB])[selRow][selCol]);
+            LOG_INFO("T-KB: funcCode=%d", (int)funcCode);
+            dispatchTKeyFunc(funcCode, ctrlPtr0, ctrlType, bBorrowed);
+#else //!defined(MOD_TKEY_MODEL)
             const auto cmdCode = std::get<1>(std::get<1>(keyboards[selKB])[selRow][selCol]);
             if (cmdCode == 0) {
                 if (ctrlPtr0 && ctrlType == Controllable::Types::ThreadedMessage) {
@@ -1718,20 +2130,52 @@ void InkHUD::InputMenuApplet::handleKeyboardPress()
                     if (bBorrowed)
                         sendToBackground();
                 }
+                else if (ctrlPtr0 && ctrlType == Controllable::Types::DMChat) {
+                    // Chat window: composed text goes as a DM to the bound peer
+                    auto ctrlPtr = (DMChatApplet*)ctrlPtr0;
+                    if (ctrlPtr->isBound()) {
+                        std::string message = currentInput;
+                        currentInput.clear();
+                        currentCIM.clear();
+                        currentCIMKeys.clear();
+                        currentCIMResults.clear();
+                        selMode = 1;
+#if !defined(MOD_UART_KEYBOARD_12KEY)
+                        selCol = -1;
+                        selRow = -1;
+#endif //defined(MOD_UART_KEYBOARD_12KEY)
+                        sendText(ctrlPtr->getPeer(), 0, message);
+                        ctrlPtr->noteSent();
+                        if (bBorrowed)
+                            sendToBackground();
+                    }
+                }
+                else if (ctrlPtr0 && ctrlType == Controllable::Types::UniChat) {
+                    // Unified chats: send to whichever target thread is open
+                    auto ctrlPtr = (UniChatApplet*)ctrlPtr0;
+                    if (ctrlPtr->hasThreadTarget()) {
+                        std::string message = currentInput;
+                        currentInput.clear();
+                        currentCIM.clear();
+                        currentCIMKeys.clear();
+                        currentCIMResults.clear();
+                        selMode = 1;
+#if !defined(MOD_UART_KEYBOARD_12KEY)
+                        selCol = -1;
+                        selRow = -1;
+#endif //defined(MOD_UART_KEYBOARD_12KEY)
+                        if (ctrlPtr->targetIsDM())
+                            sendText(ctrlPtr->getPeer(), 0, message);
+                        else
+                            sendText(NODENUM_BROADCAST, ctrlPtr->getChannelIndex(), message);
+                        ctrlPtr->noteSent();
+                        if (bBorrowed)
+                            sendToBackground();
+                    }
+                }
             }
             else if (cmdCode == 1) {
-#if defined(MOD_CJK_ENABLED)
-                for (size_t pos = 0; pos < currentInput.length(); ) {
-                    size_t numChars = getUTF8Chars((uint8_t*)currentInput.c_str() + pos);
-                    if (numChars < 1)
-                        break;
-                    if (pos + numChars == currentInput.length())
-                        currentInput = currentInput.substr(0, pos);
-                    pos += numChars;
-                }
-#else //!defined(MOD_CJK_ENABLED)
-                currentInput = currentInput.substr(0, currentInput.length() - 1);
-#endif //defined(MOD_CJK_ENABLED)
+                utf8PopLast(currentInput);
                 selMode = 1;
 #if !defined(MOD_UART_KEYBOARD_12KEY)
                 selCol = -1;
@@ -1751,11 +2195,19 @@ void InkHUD::InputMenuApplet::handleKeyboardPress()
                 if (ctrlPtr0) {
                     if (ctrlType == Controllable::Types::ThreadedMessage) {
                         auto ctrlPtr1 = (ThreadedMessageApplet*)ctrlPtr0;
-                        ctrlPtr = (Controllable*)ctrlPtr1;
+                        ctrlPtr = static_cast<Controllable*>(ctrlPtr1);
                     }
                     else if (ctrlType == Controllable::Types::Heard) {
                         auto ctrlPtr1 = (HeardApplet*)ctrlPtr0;
-                        ctrlPtr = (Controllable*)ctrlPtr1;
+                        ctrlPtr = static_cast<Controllable*>(ctrlPtr1);
+                    }
+                    else if (ctrlType == Controllable::Types::DMChat) {
+                        auto ctrlPtr1 = (DMChatApplet*)ctrlPtr0;
+                        ctrlPtr = static_cast<Controllable*>(ctrlPtr1);
+                    }
+                    else if (ctrlType == Controllable::Types::UniChat) {
+                        auto ctrlPtr1 = (UniChatApplet*)ctrlPtr0;
+                        ctrlPtr = static_cast<Controllable*>(ctrlPtr1);
                     }
                     if (ctrlPtr) {
                         if (cmdCode == 3) {
@@ -1770,38 +2222,18 @@ void InkHUD::InputMenuApplet::handleKeyboardPress()
                 }
             }
             else if (cmdCode == 5) {
-                sendTargets.clear();
-                for (uint8_t i = 0; i < MAX_NUM_CHANNELS; i++) {
-                    meshtastic_Channel &channel = channels.getByIndex(i);
-                    if (!channel.has_settings || channel.role == meshtastic_Channel_Role_DISABLED)
-                        continue;
-                    sendTargets.emplace_back(std::string("CH") + std::to_string((int)channel.index) + ":" + channel.settings.name, channel.index);
+                populateChannelTargets();
+                if (!sendTargets.empty()) { // don't enter the target picker with nothing to send to
+                    selMode = 0x10;
+                    selTarget = 0; // pre-select the first target (consistent with structural descents)
                 }
-                selMode = 0x10;
-#if defined(MOD_UART_KEYBOARD_12KEY)
-                selTarget = 0;
-#else //!defined(MOD_UART_KEYBOARD_12KEY)
-                selTarget = -1;
-#endif //defined(MOD_UART_KEYBOARD_12KEY)
             }
             else if (cmdCode == 6) {
-                sendTargets.clear();
-                uint32_t nodeCount = nodeDB->getNumMeshNodes();
-                for (uint32_t i = 0; i < nodeCount; i++) {
-                    meshtastic_NodeInfoLite *node = nodeDB->getMeshNodeByIndex(i);
-                    if (!nodeInfoLiteIsFavorite(node))
-                        continue;
-                    if (nodeInfoLiteHasUser(node))
-                        sendTargets.emplace_back(std::string(node->long_name), node->num);
-                    else
-                        sendTargets.emplace_back(hexifyNodeNum(node->num), node->num);
+                populateFavoriteTargets();
+                if (!sendTargets.empty()) { // e.g. zero favorited nodes -> stay put, don't crash on .at()
+                    selMode = 0x11;
+                    selTarget = 0; // pre-select the first target (consistent with structural descents)
                 }
-                selMode = 0x11;
-#if defined(MOD_UART_KEYBOARD_12KEY)
-                selTarget = 0;
-#else //!defined(MOD_UART_KEYBOARD_12KEY)
-                selTarget = -1;
-#endif //defined(MOD_UART_KEYBOARD_12KEY)
             }
             else if (cmdCode == 7) {
                 settings->userTiles.count++;
@@ -1820,10 +2252,33 @@ void InkHUD::InputMenuApplet::handleKeyboardPress()
             }
             else if (cmdCode == 10) {
                 MenuApplet *menu = (MenuApplet *)inkhud->getSystemApplet("Menu");
-                Tile* t = getTile();
+                // sendToBackground() may merge a transient split, freeing every tile -> getTile() would dangle.
+                // Capture it only when NOT splitting; else show on the freshly-rebuilt focused tile.
+                Tile *t = inkhud->isMenuSplitActive() ? nullptr : getTile();
                 sendToBackground();
-                menu->show(t);
+                menu->show(t ? t : inkhud->getFocusedTile());
             }
+            else if (cmdCode == 11) {
+                config.lora.tx_power = 1;
+                service->reloadConfig(SEGMENT_CONFIG);
+                rebootAtMsec = millis() + 500;
+            }
+            else if (cmdCode == 12) {
+                config.lora.tx_power = 9;
+                service->reloadConfig(SEGMENT_CONFIG);
+                rebootAtMsec = millis() + 500;
+            }
+            else if (cmdCode == 13) {
+                config.lora.tx_power = 17;
+                service->reloadConfig(SEGMENT_CONFIG);
+                rebootAtMsec = millis() + 500;
+            }
+            else if (cmdCode == 14) {
+                config.lora.tx_power = 27;
+                service->reloadConfig(SEGMENT_CONFIG);
+                rebootAtMsec = millis() + 500;
+            }
+#endif //defined(MOD_TKEY_MODEL)
         }
         else if (selKB == 1) {
             currentInput += std::get<0>(std::get<1>(keyboards[selKB])[selRow][selCol]);
@@ -1852,8 +2307,19 @@ void InkHUD::InputMenuApplet::handleKeyboardPress()
             selCol = -1;
 #endif //defined(MOD_UART_KEYBOARD_12KEY)
         }
+#if defined(MOD_TKEY_MODEL)
+        else if (selKB == 4) { // emoji page: plain append, like the letter boards (bopomofo pages are 5/6 on this build)
+            currentInput += std::get<0>(std::get<1>(keyboards[selKB])[selRow][selCol]);
+            selMode = 1;
+            selCol = -1;
+        }
+#endif //defined(MOD_TKEY_MODEL)
 #if defined(MOD_CJK_ENABLED)
+#if defined(MOD_TKEY_MODEL)
+        else if (selKB == 5 || selKB == 6 || selKB == 7) { // half-mapped pages + the full on-screen board
+#else //!defined(MOD_TKEY_MODEL)
         else if (selKB == 4) {
+#endif //defined(MOD_TKEY_MODEL)
             if (selMode == 3) {
                 currentInput += currentCIMResults[selResult];
                 currentCIM.clear();
@@ -1882,66 +2348,7 @@ void InkHUD::InputMenuApplet::handleKeyboardPress()
                 }
                 else if (key < 42) {
                     key -= 37;
-                    if (currentCIMKeys.size() == 1) {
-                        auto idx0 = bopomofoTable[currentCIMKeys[0]];
-                        if (bopomofoTable[idx0] != -1) {
-                            for (int16_t idx1 = bopomofoTable[idx0 + key]; idx1 < bopomofoTable[idx0 + key + 1]; idx1++) {
-                                int16_t charIdx = exactIndex[bopomofoTable[idx1]];
-                                currentCIMResults.emplace_back(std::string((char*)exactMap + charIdx, (size_t)getUTF8Chars(exactMap + charIdx)));
-                            }
-                            selMode = 3;
-#if defined(MOD_UART_KEYBOARD_12KEY)
-                            selResult = 0;
-#else //!defined(MOD_UART_KEYBOARD_12KEY)
-                            selResult = -1;
-#endif //defined(MOD_UART_KEYBOARD_12KEY)
-                        }
-                    }
-                    else if (currentCIMKeys.size() == 2) {
-                        auto idx0 = bopomofoTable[currentCIMKeys[0]];
-                        if (bopomofoTable[idx0] == -1)
-                            idx0++;
-                        else
-                            idx0 += 6;
-                        idx0 = bopomofoTable[idx0 + currentCIMKeys[1]];
-                        if (bopomofoTable[idx0] != -1) {
-                            for (int16_t idx1 = bopomofoTable[idx0 + key]; idx1 < bopomofoTable[idx0 + key + 1]; idx1++) {
-                                int16_t charIdx = exactIndex[bopomofoTable[idx1]];
-                                currentCIMResults.emplace_back(std::string((char*)exactMap + charIdx, (size_t)getUTF8Chars(exactMap + charIdx)));
-                            }
-                            selMode = 3;
-#if defined(MOD_UART_KEYBOARD_12KEY)
-                            selResult = 0;
-#else //!defined(MOD_UART_KEYBOARD_12KEY)
-                            selResult = -1;
-#endif //defined(MOD_UART_KEYBOARD_12KEY)
-                        }
-                    }
-                    else if (currentCIMKeys.size() == 3) {
-                        auto idx0 = bopomofoTable[currentCIMKeys[0]];
-                        if (bopomofoTable[idx0] == -1)
-                            idx0++;
-                        else
-                            idx0 += 6;
-                        idx0 = bopomofoTable[idx0 + currentCIMKeys[1]];
-                        if (bopomofoTable[idx0] == -1)
-                            idx0++;
-                        else
-                            idx0 += 6;
-                        idx0 = bopomofoTable[idx0 + currentCIMKeys[2]];
-                        if (bopomofoTable[idx0] != -1) {
-                            for (int16_t idx1 = bopomofoTable[idx0 + key]; idx1 < bopomofoTable[idx0 + key + 1]; idx1++) {
-                                int16_t charIdx = exactIndex[bopomofoTable[idx1]];
-                                currentCIMResults.emplace_back(std::string((char*)exactMap + charIdx, (size_t)getUTF8Chars(exactMap + charIdx)));
-                            }
-                            selMode = 3;
-#if defined(MOD_UART_KEYBOARD_12KEY)
-                            selResult = 0;
-#else //!defined(MOD_UART_KEYBOARD_12KEY)
-                            selResult = -1;
-#endif //defined(MOD_UART_KEYBOARD_12KEY)
-                        }
-                    }
+                    lookupBopomofoCandidates(key, 0); // pre-highlight candidate 0 on every build
                     currentCIM.clear();
                     currentCIMKeys.clear();
                     if (selMode != 3) {
@@ -1956,12 +2363,43 @@ void InkHUD::InputMenuApplet::handleKeyboardPress()
                     }
                 }
                 else {
+#if defined(MOD_TKEY_MODEL)
+                    // Key codes of the T-KB bopomofo pages 5/6 (same map as handleCIMKey); other codes
+                    // (⇒ 43, fillers, ✔ 52) are placeholders for physical keys and only reset the selection
+                    if (key == 42) { // ⬅ : drop the pending symbol first, else the last committed character
+                        if (!currentCIMKeys.empty()) {
+                            utf8PopLast(currentCIM);
+                            currentCIMKeys.pop_back();
+                        }
+                        else {
+                            utf8PopLast(currentInput);
+                        }
+                    }
+                    else if (key == 47)
+                        currentInput += "，";
+                    else if (key == 48)
+                        currentInput += "。";
+                    else if (key == 49)
+                        currentInput += "：";
+                    else if (key == 50)
+                        currentInput += "；";
+                    else if (key == 51)
+                        currentInput += "　";
+                    // 53-55: punctuation on the full on-screen bopomofo board (7)
+                    else if (key == 53)
+                        currentInput += "，";
+                    else if (key == 54)
+                        currentInput += "。";
+                    else if (key == 55)
+                        currentInput += "　";
+#else //!defined(MOD_TKEY_MODEL)
                     if (key == 42)
                         currentInput += "，";
                     else if (key == 43)
                         currentInput += "。";
                     else if (key == 44)
                         currentInput += "　";
+#endif //defined(MOD_TKEY_MODEL)
 #if defined(MOD_UART_KEYBOARD_12KEY)
                     selMode = 2;
 #else //!defined(MOD_UART_KEYBOARD_12KEY)
@@ -1976,6 +2414,340 @@ void InkHUD::InputMenuApplet::handleKeyboardPress()
     }
 }
 
+// Remove the final UTF-8 codepoint from s (used by every CIM-aware backspace path). Uses the signed
+// getUTF8Chars result so a malformed lead byte (-1) stops the walk instead of wrapping.
+void InkHUD::InputMenuApplet::utf8PopLast(std::string &s)
+{
+    for (size_t pos = 0; pos < s.length();) {
+        int numChars = getUTF8Chars((const uint8_t *)s.c_str() + pos);
+        if (numChars < 1)
+            break;
+        if (pos + (size_t)numChars == s.length())
+            s = s.substr(0, pos);
+        pos += (size_t)numChars;
+    }
+}
+
+// (Re)fill sendTargets with the enabled channels ("CHn:name"). Callers set selMode/selTarget.
+void InkHUD::InputMenuApplet::populateChannelTargets()
+{
+    sendTargets.clear();
+    for (uint8_t i = 0; i < MAX_NUM_CHANNELS; i++) {
+        meshtastic_Channel &channel = channels.getByIndex(i);
+        if (!channel.has_settings || channel.role == meshtastic_Channel_Role_DISABLED)
+            continue;
+        sendTargets.emplace_back(std::string("CH") + std::to_string((int)channel.index) + ":" + channel.settings.name, channel.index);
+    }
+}
+
+// (Re)fill sendTargets with the favorite nodes (long name, else hex num). Callers set selMode/selTarget.
+void InkHUD::InputMenuApplet::populateFavoriteTargets()
+{
+    sendTargets.clear();
+    uint32_t nodeCount = nodeDB->getNumMeshNodes();
+    for (uint32_t i = 0; i < nodeCount; i++) {
+        meshtastic_NodeInfoLite *node = nodeDB->getMeshNodeByIndex(i);
+        if (!nodeInfoLiteIsFavorite(node))
+            continue;
+        if (nodeInfoLiteHasUser(node))
+            sendTargets.emplace_back(std::string(node->long_name), node->num);
+        else
+            sendTargets.emplace_back(hexifyNodeNum(node->num), node->num);
+    }
+}
+
+// "Left" navigation: focus the previous user tile in a multi-tile layout (bounded — no-op at the leftmost
+// tile), or step to the previous applet when there is only one tile. Bounded prevTile()/nextTile() keep the
+// 1- and 2-tile behaviour identical to the old focused==0/focused>0 toggle while making 3/4-tile layouts
+// navigable (the old code called nextTile() for "left", which moved the wrong way past two tiles).
+void InkHUD::InputMenuApplet::tilePrevOrApplet()
+{
+    if (settings->userTiles.count > 1) {
+        if (settings->userTiles.focused > 0)
+            inkhud->prevTile();
+    }
+    else {
+        inkhud->prevApplet();
+    }
+}
+
+// "Right" navigation: focus the next user tile in a multi-tile layout (bounded — no-op at the rightmost
+// tile), or step to the next applet when there is only one tile.
+void InkHUD::InputMenuApplet::tileNextOrApplet()
+{
+    if (settings->userTiles.count > 1) {
+        if (settings->userTiles.focused < settings->userTiles.count - 1)
+            inkhud->nextTile();
+    }
+    else {
+        inkhud->nextApplet();
+    }
+}
+
+#if defined(MOD_CJK_ENABLED)
+// Walk the bopomofoTable trie for the accumulated currentCIMKeys plus the given tone (0..4), appending
+// each matching character to currentCIMResults. On a non-empty result, enter candidate mode (selMode=3,
+// selResult=selResultOnFound). Guards each descent against a -1 child pointer (invalid symbol sequence)
+// and only commits to candidate mode when characters were actually produced.
+void InkHUD::InputMenuApplet::lookupBopomofoCandidates(int16_t toneKey, int16_t selResultOnFound)
+{
+    if (currentCIMKeys.size() == 1) {
+        // Terminal node: slots idx0..idx0+5 are this syllable's tone-range boundaries, so no child
+        // descent and none of the +=6/++ skips the multi-symbol cases below use.
+        auto idx0 = bopomofoTable[currentCIMKeys[0]];
+        if (bopomofoTable[idx0] != -1) {
+            for (int16_t idx1 = bopomofoTable[idx0 + toneKey]; idx1 < bopomofoTable[idx0 + toneKey + 1]; idx1++) {
+                int16_t charIdx = exactIndex[bopomofoTable[idx1]];
+                currentCIMResults.emplace_back(std::string((char*)exactMap + charIdx, (size_t)getUTF8Chars(exactMap + charIdx)));
+            }
+        }
+    }
+    else if (currentCIMKeys.size() == 2) {
+        auto idx0 = bopomofoTable[currentCIMKeys[0]];
+        if (bopomofoTable[idx0] == -1)
+            idx0++;
+        else
+            idx0 += 6;
+        idx0 = bopomofoTable[idx0 + currentCIMKeys[1]]; // may be -1 for an invalid symbol prefix
+        if (idx0 >= 0 && bopomofoTable[idx0] != -1) {
+            for (int16_t idx1 = bopomofoTable[idx0 + toneKey]; idx1 < bopomofoTable[idx0 + toneKey + 1]; idx1++) {
+                int16_t charIdx = exactIndex[bopomofoTable[idx1]];
+                currentCIMResults.emplace_back(std::string((char*)exactMap + charIdx, (size_t)getUTF8Chars(exactMap + charIdx)));
+            }
+        }
+    }
+    else if (currentCIMKeys.size() == 3) {
+        auto idx0 = bopomofoTable[currentCIMKeys[0]];
+        if (bopomofoTable[idx0] == -1)
+            idx0++;
+        else
+            idx0 += 6;
+        idx0 = bopomofoTable[idx0 + currentCIMKeys[1]]; // may be -1 for an invalid symbol prefix
+        if (idx0 >= 0) {
+            if (bopomofoTable[idx0] == -1)
+                idx0++;
+            else
+                idx0 += 6;
+            idx0 = bopomofoTable[idx0 + currentCIMKeys[2]]; // may be -1 too
+        }
+        if (idx0 >= 0 && bopomofoTable[idx0] != -1) {
+            for (int16_t idx1 = bopomofoTable[idx0 + toneKey]; idx1 < bopomofoTable[idx0 + toneKey + 1]; idx1++) {
+                int16_t charIdx = exactIndex[bopomofoTable[idx1]];
+                currentCIMResults.emplace_back(std::string((char*)exactMap + charIdx, (size_t)getUTF8Chars(exactMap + charIdx)));
+            }
+        }
+    }
+    // Only enter candidate mode when the walk actually produced characters (a valid syllable may lack a
+    // given tone); this also keeps the (size()-1) paging arithmetic away from an empty vector.
+    if (!currentCIMResults.empty()) {
+        selMode = 3;
+        selResult = selResultOnFound;
+    }
+}
+#endif //defined(MOD_CJK_ENABLED)
+
+#if defined(MOD_TKEY_MODEL)
+// Shared funcCode dispatch for the T-Keyboard Fn layer, reached two ways: the physical bAlt+key combo
+// (handleMenuTKey) and Enter on the on-screen Fn board (handleKeyboardPress). Both resolve funcCode from
+// the keyboard map, then call this. funcCode==14 commits the composed text to the neighbour applet.
+void InkHUD::InputMenuApplet::dispatchTKeyFunc(int16_t funcCode, Applet *ctrlPtr0, Controllable::Types ctrlType, bool bBorrowed)
+{
+    if (funcCode == 0 || funcCode == 5) {
+#if defined(MOD_UART_T_KEYBOARD)
+        // UART T-keyboard: dim/brighten its PWM backlight over the wire
+        if (funcCode == 0)
+            currentKBBL = (currentKBBL < 15) ? 7 : (currentKBBL - 8);
+        else
+            currentKBBL = (currentKBBL > 246) ? 255 : (currentKBBL + 8);
+        Serial2.write(0x02);
+        Serial2.write(currentKBBL);
+#elif defined(MOD_I2C_TCA8418_KEYBOARD)
+        // TCA8418 keyboard backlight is a simple GPIO: 🔅 off / 🔆 on
+        if (inkhudI2CKeyboard)
+            inkhudI2CKeyboard->setBacklight(funcCode == 5);
+#endif
+    }
+    else if (funcCode == 1) {
+        auto app = getActiveControllable();
+        if (app)
+            app->handleBack();
+    }
+    else if (funcCode == 2) {
+        auto app = getActiveControllable();
+        if (app)
+            app->handleUp();
+    }
+    else if (funcCode == 3) {
+        auto app = getActiveControllable();
+        if (app)
+            app->handleEnter();
+    }
+    else if (funcCode == 4) {
+        LOG_INFO("Shutting down from input menu");
+        shutdownAtMsec = millis();
+    }
+    else if (funcCode == 6) {
+        tilePrevOrApplet();
+    }
+    else if (funcCode == 7) {
+        auto app = getActiveControllable();
+        if (app)
+            app->handleDown();
+    }
+    else if (funcCode == 8) {
+        tileNextOrApplet();
+    }
+    else if (funcCode == 9) {
+        sendToBackground();
+    }
+    else if (funcCode == 10) {
+#if defined(T_DECK_MAX)
+        // ☀ (alt+B): e-ink frontlight cycle Off -> Low -> Med -> High. The legend existed on the
+        // Fn board since the port but was never wired to a dispatch case.
+        ((MenuApplet *)inkhud->getSystemApplet("Menu"))->quickCycleFrontlight();
+#endif
+    }
+    else if (funcCode == 16) {
+#if defined(T_DECK_MAX)
+        // "Vib" (alt+V): vibration policy All -> DMs only -> Off; the corner bell glyph reflects it
+        ((MenuApplet *)inkhud->getSystemApplet("Menu"))->quickCycleVibra();
+        inkhud->forceUpdate(Drivers::EInk::UpdateTypes::FAST, true);
+#endif
+    }
+    else if (funcCode == 11) {
+        populateChannelTargets();
+        if (!sendTargets.empty()) { // don't enter the target picker with nothing to send to
+            selMode = 0x10;
+            selTarget = 0;
+        }
+    }
+    else if (funcCode == 12) {
+        MenuApplet *menu = (MenuApplet *)inkhud->getSystemApplet("Menu");
+        // sendToBackground() may merge a transient split, which frees every tile -> getTile() would
+        // dangle. Capture it only when NOT splitting; else show on the freshly-rebuilt focused tile.
+        Tile *t = inkhud->isMenuSplitActive() ? nullptr : getTile();
+        sendToBackground();
+        menu->show(t ? t : inkhud->getFocusedTile());
+    }
+    else if (funcCode == 13) {
+        populateFavoriteTargets();
+        if (!sendTargets.empty()) { // e.g. zero favorited nodes -> stay put, don't crash on .at()
+            selMode = 0x11;
+            selTarget = 0;
+        }
+    }
+    else if (funcCode == 14) {
+        commitInputToNeighbor(ctrlPtr0, ctrlType, bBorrowed);
+    }
+    else if (funcCode == 15) {
+        // Toggle the focused tile ("<->", alt+D). Unlike ←/→ (funcCodes 6/8, bounded prev/next),
+        // nextTile() wraps, so in the 2-tile split it flips upper<->lower with a single chord.
+        // With the IME open on a 2-tile layout, nextTile() re-shows it driving the other half.
+        if (settings->userTiles.count > 1)
+            inkhud->nextTile();
+    }
+}
+
+// funcCode 14: commit currentInput to the neighbour/borrowed controllable. Broadcast for ThreadedMessage,
+// "lat,lng"/place-name jump for NavMap, node search for Heard. Clears the compose buffers and
+// closes the menu when we borrowed the tile (or a transient split is active, for NavMap).
+void InkHUD::InputMenuApplet::commitInputToNeighbor(Applet *ctrlPtr0, Controllable::Types ctrlType, bool bBorrowed)
+{
+    if (ctrlPtr0 && ctrlType == Controllable::Types::ThreadedMessage) {
+        auto ctrlPtr = (ThreadedMessageApplet*)ctrlPtr0;
+        std::string message = currentInput;
+        currentInput.clear();
+        currentCIM.clear();
+        currentCIMKeys.clear();
+        currentCIMResults.clear();
+        selMode = 2;
+        selCol = -1;
+        selRow = -1;
+        sendText(NODENUM_BROADCAST, ctrlPtr->getChannelIndex(), message);
+        if (bBorrowed)
+            sendToBackground();
+    }
+    else if (ctrlPtr0 && ctrlType == Controllable::Types::DMChat) {
+        // Chat window: composed text goes as a DM to the bound peer
+        auto ctrlPtr = (DMChatApplet*)ctrlPtr0;
+        if (ctrlPtr->isBound()) {
+            std::string message = currentInput;
+            currentInput.clear();
+            currentCIM.clear();
+            currentCIMKeys.clear();
+            currentCIMResults.clear();
+            selMode = 2;
+            selCol = -1;
+            selRow = -1;
+            sendText(ctrlPtr->getPeer(), 0, message);
+            ctrlPtr->noteSent();
+            if (bBorrowed)
+                sendToBackground();
+        }
+    }
+    else if (ctrlPtr0 && ctrlType == Controllable::Types::UniChat) {
+        // Unified chats: send to whichever target thread is open
+        auto ctrlPtr = (UniChatApplet*)ctrlPtr0;
+        if (ctrlPtr->hasThreadTarget()) {
+            std::string message = currentInput;
+            currentInput.clear();
+            currentCIM.clear();
+            currentCIMKeys.clear();
+            currentCIMResults.clear();
+            selMode = 2;
+            selCol = -1;
+            selRow = -1;
+            if (ctrlPtr->targetIsDM())
+                sendText(ctrlPtr->getPeer(), 0, message);
+            else
+                sendText(NODENUM_BROADCAST, ctrlPtr->getChannelIndex(), message);
+            ctrlPtr->noteSent();
+            if (bBorrowed)
+                sendToBackground();
+        }
+    }
+    else if (ctrlPtr0 && ctrlType == Controllable::Types::NavMap) {
+        // Parse the edited "lat,lng" text and jump the map there (gotoCenter range-checks).
+        char *end1 = nullptr;
+        float lat = strtof(currentInput.c_str(), &end1);
+        const char *s2 = end1;
+        while (*s2 == ',' || *s2 == ' ' || *s2 == '\t' || *s2 == '\n' || *s2 == '\r')
+            s2++;
+        char *end2 = nullptr;
+        float lng = strtof(s2, &end2);
+        if (end1 != currentInput.c_str() && end2 != s2)
+            ((NavMapApplet *)ctrlPtr0)->gotoCenter(lat, lng);
+        else
+            ((NavMapApplet *)ctrlPtr0)->gotoPlace(currentInput.c_str()); // not lat,lng -> place name
+        currentInput.clear();
+        currentCIM.clear();
+        currentCIMKeys.clear();
+        currentCIMResults.clear();
+        selMode = 2;
+        selCol = -1;
+        selRow = -1;
+        // Close on commit when driving via a transient split too (there bBorrowed is false, as the
+        // NavMap is the neighbour tile); onBackground then merges the split back.
+        if (bBorrowed || inkhud->isMenuSplitActive())
+            sendToBackground();
+    }
+    else if (ctrlPtr0 && ctrlType == Controllable::Types::Heard) {
+        // Node search (menu "Search Node"): scroll the Heard list to the first short/long-name
+        // match and highlight it - Enter on the highlight then opens the DM chat as usual.
+        ((HeardApplet *)ctrlPtr0)->searchNode(currentInput.c_str());
+        currentInput.clear();
+        currentCIM.clear();
+        currentCIMKeys.clear();
+        currentCIMResults.clear();
+        selMode = 2;
+        selCol = -1;
+        selRow = -1;
+        if (bBorrowed || inkhud->isMenuSplitActive())
+            sendToBackground();
+    }
+}
+#endif //defined(MOD_TKEY_MODEL)
+
 void InkHUD::InputMenuApplet::sendText(NodeNum dest, ChannelIndex channel, const std::string& message)
 {
     meshtastic_MeshPacket *p = router->allocForSending();
@@ -1983,10 +2755,35 @@ void InkHUD::InputMenuApplet::sendText(NodeNum dest, ChannelIndex channel, const
     p->to = dest;
     p->channel = channel;
     p->want_ack = true;
-    p->decoded.payload.size = message.length();
+    // Clamp to the payload capacity, cutting only on a UTF-8 character boundary
+    size_t sendBytes = message.length();
+    if (sendBytes > sizeof(p->decoded.payload.bytes)) {
+#if defined(MOD_CJK_ENABLED)
+        sendBytes = 0;
+        for (size_t pos = 0; pos < message.length();) {
+            int numChars = getUTF8Chars((uint8_t *)message.c_str() + pos);
+            if (numChars < 1 || pos + numChars > sizeof(p->decoded.payload.bytes))
+                break;
+            pos += numChars;
+            sendBytes = pos;
+        }
+#else //!defined(MOD_CJK_ENABLED)
+        sendBytes = sizeof(p->decoded.payload.bytes);
+#endif //defined(MOD_CJK_ENABLED)
+    }
+    p->decoded.payload.size = sendBytes;
     memcpy(p->decoded.payload.bytes, message.c_str(), p->decoded.payload.size);
 
-    LOG_INFO("Send message id=%d, dest=%x, msg=%.*s", p->id, p->to, p->decoded.payload.size, p->decoded.payload.bytes);
+    LOG_INFO("Send message id=%u, dest=%x, msg=%.*s", p->id, p->to, (int)p->decoded.payload.size, (const char *)p->decoded.payload.bytes);
+
+    // Record an outgoing DM in the message store BEFORE handing the packet off (sendToMesh may
+    // release it). Broadcasts are deliberately excluded: Router::sendLocal loops those back
+    // through handleReceived, where the chat applets already store them (and
+    // ThreadedMessageApplet has no id-dedupe, so an unconditional append would double-store).
+    // A DM to a remote peer never loops back - without this append the sent message existed
+    // NOWHERE, and the Chats/DM thread showed only the peer's side of the conversation.
+    if (!isBroadcast(p->to))
+        messageStore.tryAddFromPacket(*p);
 
     service->sendToMesh(p, RX_SRC_LOCAL, true); // Send to mesh, cc to phone
 }

@@ -19,6 +19,7 @@
 
 #include "FSCommon.h"
 #include "GPSUpdateScheduling.h"
+#include "RadioLibInterface.h" // txGood, for the per-window TX count in WindowDiag
 #include "SPILock.h"
 #include "SafeFile.h"
 #include "cas.h"
@@ -603,6 +604,48 @@ static const int rareSerialSpeeds[3] = {4800, 57600, GPS_BAUDRATE};
 #define GPS_PROBETRIES 2
 #endif
 
+// Does OUR sleep actually unpower the GNSS, losing everything it keeps in its
+// battery-backed domain (runtime config AND ephemeris/almanac)? This is a BOARD
+// property, not a module property:
+//   - No switchable EN rail (PIN_GPS_EN undefined or -1, e.g. heltec_wireless_tracker,
+//     which comments it out): writePinEN() drives nothing, the module never loses power,
+//     so its config and hot-start data both survive our "hard" sleep.
+//   - EN cut but a backup rail held up (GPS_VRTC_EN, e.g. tracker-t1000-e / wio-t1000-s):
+//     the backup domain survives, so the config and hot-start data do too.
+//   - EN cut with NO backup rail (heltec_mesh_node_t096): the module is fully
+//     unpowered, so on every wake BOTH its config and its ephemeris are gone.
+// Only the last case may reconfigure on wake - and there it MUST send the full config.
+#if defined(PIN_GPS_EN) && (PIN_GPS_EN != -1) && !(defined(GPS_VRTC_EN) && (GPS_VRTC_EN != -1))
+#define GPS_WAKE_LOSES_MODULE_CONFIG 1
+#else
+#define GPS_WAKE_LOSES_MODULE_CONFIG 0
+#endif
+
+// How long the module may stay silent (no NMEA sentence passing checksum) while
+// GPS_ACTIVE before we assume it has wedged and attempt a hardware recovery.
+#ifndef GPS_SILENCE_RECOVERY_MS
+#define GPS_SILENCE_RECOVERY_MS (30 * 1000UL)
+#endif
+
+// Max hardware recoveries per active window, to avoid reset loops when the module
+// is silent for a reason a reset can't fix.
+#ifndef GPS_WEDGE_RECOVERY_MAX
+#define GPS_WEDGE_RECOVERY_MAX 2
+#endif
+
+// If the boot probe finds no module, reset it and retry this often instead of
+// disabling GPS until the next reboot (a wedged module probes as absent).
+#ifndef GPS_PROBE_RETRY_MS
+#define GPS_PROBE_RETRY_MS (15 * 60 * 1000UL)
+#endif
+
+// After this many failed probe walks, give up for the rest of the boot: at that
+// point the module is genuinely absent (unpopulated footprint) or dead beyond what
+// reset pulses and power cycles can fix, and each walk blocks the main loop.
+#ifndef GPS_PROBE_RETRY_MAX
+#define GPS_PROBE_RETRY_MAX 8
+#endif
+
 bool GPS::loadProbeCache()
 {
 #ifdef FSCom
@@ -943,24 +986,7 @@ bool GPS::setup()
                 }
             }
         } else if (gnssModel == GNSS_MODEL_UC6580) {
-            // The Unicore UC6580 can use a lot of sat systems, enable it to
-            // use GPS L1 & L5 + BDS B1I & B2a + GLONASS L1 + GALILEO E1 & E5a + SBAS + QZSS
-            // This will reset the receiver, so wait a bit afterwards
-            // The paranoid will wait for the OK*04 confirmation response after each command.
-            _serial_gps->write("$CFGSYS,h35155\r\n");
-            delay(750);
-            // Must be done after the CFGSYS command
-            // Turn off GSV messages, we don't really care about which and where the sats are, maybe someday.
-            _serial_gps->write("$CFGMSG,0,3,0\r\n");
-            delay(250);
-            // Turn off GSA messages, TinyGPS++ doesn't use this message.
-            _serial_gps->write("$CFGMSG,0,2,0\r\n");
-            delay(250);
-            // Turn off NOTICE __TXT messages, these may provide Unicore some info but we don't care.
-            _serial_gps->write("$CFGMSG,6,0,0\r\n");
-            delay(250);
-            _serial_gps->write("$CFGMSG,6,1,0\r\n");
-            delay(250);
+            reapplyModuleConfig(true);
         } else if (IS_ONE_OF(gnssModel, GNSS_MODEL_AG3335, GNSS_MODEL_AG3352)) {
 
             if (config.lora.region == meshtastic_Config_LoRaConfig_RegionCode_IN ||
@@ -1152,6 +1178,118 @@ GPS::~GPS()
 }
 
 // Put the GPS hardware into a specified state
+// Coarse time + position aiding for the u-blox module (see GPS.h). MGA-INI, protocol >= 15.
+void GPS::injectAidingToModule(const char *reason)
+{
+    if (!_serial_gps)
+        return;
+    // MGA-INI is u-blox protocol >= 15 (M8 and newer). Older u-blox use AID-INI (not worth
+    // supporting), and non-u-blox chips (e.g. UC6580) must not get UBX at all.
+    if (gnssModel != GNSS_MODEL_UBLOX8 && gnssModel != GNSS_MODEL_UBLOX9 && gnssModel != GNSS_MODEL_UBLOX10)
+        return;
+    const RTCQuality q = getRTCQuality();
+    if (q >= RTCQualityGPS)
+        return; // the module's own fix is the source of our time (and it knows its position)
+
+    // --- Time: UBX-MGA-INI-TIME_UTC ---
+    bool sentTime = false;
+    struct tm t = {};
+    if (q >= RTCQualityDevice) {
+        struct timeval tv;
+        gettimeofday(&tv, nullptr);
+        time_t now = tv.tv_sec;
+        gmtime_r(&now, &t);
+        if (isPlausibleNmeaTime(t)) {
+            uint8_t p[24] = {0};
+            p[0] = 0x10;          // type: UTC time
+            p[1] = 0x00;          // version
+            p[2] = 0x00;          // ref: none (time marks receipt of this message)
+            p[3] = (uint8_t)0x80; // leapSecs: unknown (-128)
+            const uint16_t year = t.tm_year + 1900;
+            p[4] = year & 0xFF;
+            p[5] = year >> 8;
+            p[6] = t.tm_mon + 1;
+            p[7] = t.tm_mday;
+            p[8] = t.tm_hour;
+            p[9] = t.tm_min;
+            p[10] = t.tm_sec;
+            // p[12..15] ns = 0
+            p[16] = 10; // tAccS: +/-10s - honest for mesh/carried time, plenty for RTC + aiding
+            // p[18..23] reserved / tAccNs = 0
+            const uint8_t len = makeUBXPacket(0x13, 0x40, sizeof(p), p);
+            _serial_gps->write(UBXscratch, len);
+            sentTime = true;
+        }
+    }
+
+    // --- Position: UBX-MGA-INI-POS_LLH, from the last known localPosition ---
+    // Sent even without time (mildly useful alone); the wide 50km accuracy keeps the hint
+    // honest for a portable device that may have travelled since the position was recorded.
+    bool sentPos = false;
+    if (localPosition.latitude_i != 0 || localPosition.longitude_i != 0) {
+        uint8_t p[20] = {0};
+        p[0] = 0x01; // type: POS_LLH
+        p[1] = 0x00; // version
+        // p[2..3] reserved
+        const int32_t lat = localPosition.latitude_i;  // 1e-7 deg, same encoding as the message
+        const int32_t lon = localPosition.longitude_i; // 1e-7 deg
+        const int32_t altCm = localPosition.altitude * 100;
+        const uint32_t posAccCm = 5000000; // +/-50 km stddev
+        memcpy(&p[4], &lat, 4);
+        memcpy(&p[8], &lon, 4);
+        memcpy(&p[12], &altCm, 4);
+        memcpy(&p[16], &posAccCm, 4);
+        const uint8_t len = makeUBXPacket(0x13, 0x40, sizeof(p), p);
+        _serial_gps->write(UBXscratch, len);
+        sentPos = true;
+    }
+
+    if (sentTime || sentPos)
+        LOG_INFO("GPS: aiding -> module (%s%s%s, %s)", sentTime ? "time" : "", (sentTime && sentPos) ? "+" : "",
+                 sentPos ? "position" : "", reason);
+}
+
+// See GPS.h: NAV-PVT poll for time a continuously-powered module still holds (pre-fix).
+void GPS::pollModuleHeldTime()
+{
+    if (!_serial_gps)
+        return;
+    if (gnssModel != GNSS_MODEL_UBLOX8 && gnssModel != GNSS_MODEL_UBLOX9 && gnssModel != GNSS_MODEL_UBLOX10)
+        return;
+    static uint32_t grabUntil = 0;      // first ~10s of the first active window per boot
+    static uint32_t lastPollMs = 0;
+    if (grabUntil == 0)
+        grabUntil = (millis() + 10000) | 1;
+    if (getRTCQuality() >= RTCQualityGPS || (int32_t)(grabUntil - millis()) <= 0)
+        return;
+    if ((uint32_t)(millis() - lastPollMs) < 1200)
+        return;
+    lastPollMs = millis();
+
+    uint8_t pvt[100] = {0};
+    const uint8_t len = makeUBXPacket(0x01, 0x07, 0, nullptr); // NAV-PVT poll
+    _serial_gps->write(UBXscratch, len);
+    const int got = getACK(pvt, sizeof(pvt), 0x01, 0x07, 600);
+    if (got < 92)
+        return;
+    // valid flags: bit0 = validDate, bit1 = validTime, bit2 = fullyResolved
+    LOG_DEBUG("NAV-PVT reply: valid=0x%02X %04u-%02u-%02u %02u:%02u:%02u", pvt[11], (unsigned)(pvt[4] | (pvt[5] << 8)),
+              (unsigned)pvt[6], (unsigned)pvt[7], (unsigned)pvt[8], (unsigned)pvt[9], (unsigned)pvt[10]);
+    if ((pvt[11] & 0x03) != 0x03)
+        return;
+    struct tm t;
+    t.tm_year = (int)(pvt[4] | (pvt[5] << 8)) - 1900;
+    t.tm_mon = pvt[6] - 1;
+    t.tm_mday = pvt[7];
+    t.tm_hour = pvt[8];
+    t.tm_min = pvt[9];
+    t.tm_sec = pvt[10];
+    t.tm_isdst = false;
+    if (isPlausibleNmeaTime(t) && perhapsSetRTC(RTCQualityGPS, t) == RTCSetResultSuccess)
+        LOG_INFO("Module-held time recovered: %04d-%02d-%02d %02d:%02d:%02d UTC", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
+                 t.tm_hour, t.tm_min, t.tm_sec);
+}
+
 void GPS::setPowerState(GPSPowerState newState, uint32_t sleepTime)
 {
     // Update the stored GPSPowerstate, and create local copies
@@ -1159,12 +1297,45 @@ void GPS::setPowerState(GPSPowerState newState, uint32_t sleepTime)
     powerState = newState;
     LOG_INFO("GPS power state move from %s to %s", getGPSPowerStateString(oldState), getGPSPowerStateString(newState));
 
+    // Awake -> any sleep: last chance to seed the module's backup RTC with system time before
+    // the sleep command lands (the write below in this switch). Covers every path down -
+    // window end, menu/alt+G disable, NavMap session end - so a module that never fixed still
+    // carries mesh-learned time on its backup domain.
+    if ((oldState == GPS_ACTIVE || oldState == GPS_IDLE) &&
+        (newState == GPS_SOFTSLEEP || newState == GPS_HARDSLEEP || newState == GPS_OFF))
+        injectAidingToModule("pre-sleep");
+
     switch (newState) {
     case GPS_ACTIVE:
     case GPS_IDLE:
+        // Re-arm the wedge watchdog for this active window. Must happen here (not only
+        // in runOnce ticks): after disable() no tick ever observes the non-ACTIVE state,
+        // so enable() would otherwise start with a stale silence baseline and either
+        // fire a spurious hardware reset or start with the attempt budget exhausted.
+        silenceStartedMsec = 0;
+        wedgeRecoveryAttempts = 0;
         if (oldState == GPS_ACTIVE)
             break;
         gotTime = false;
+        // The fix-hold is per-window state, like gotTime. runOnce() only clears it on a publish, so a
+        // window that saw a fix but never a plausible GPS date (gotTime false, e.g. a UC6580 emitting
+        // garbage RMC dates, #5088) ends via down() with the hold still armed. Carried into the next
+        // wake, that expired hold makes holdExpired true on the FIRST active tick, which calls down()
+        // immediately - every subsequent search window collapses to one tick (~2s of module power on
+        // this board), the module can never fix or even produce a plausible date again, and because
+        // hasValidLocation stays latched the scheduler logs each one-tick window as a successful lock.
+        // Permanent, silent, and survives enable(): both up() and enable() funnel through here.
+        fixHoldEnds = 0;
+        windowSawAcceptedFix = false;
+        // Baselines for the WindowDiag snapshot down() takes at window end
+        nmeaOkAtWindowStart = reader.passedChecksum();
+        nmeaBadAtWindowStart = reader.failedChecksum();
+        windowStartedMs = millis();
+        gsvInView = 255; // per-window: 255 stays put if GSV is off or the module sends none
+        gsvMaxSnr = 0;
+        gsvTracked = 0;
+        gsvGroupTracked = 0;
+        txAtWindowStart = RadioLibInterface::instance ? RadioLibInterface::instance->txGood : 0;
         if (oldState == GPS_IDLE) // If hardware already awake, no changes needed
             break;
         if (oldState != GPS_ACTIVE && oldState != GPS_IDLE) // If hardware just waking now, clear buffer
@@ -1183,6 +1354,46 @@ void GPS::setPowerState(GPSPowerState newState, uint32_t sleepTime)
         setPowerPMU(true);                                        // Power (PMU): on
         writePinStandby(false);                                   // Standby (pin): awake (not standby)
         setPowerUBLOX(true);                                      // Standby (UBLOX): awake
+#if GPS_WAKE_LOSES_MODULE_CONFIG
+        // Waking a UC6580 whose rail we actually cut (see GPS_WAKE_LOSES_MODULE_CONFIG): the module
+        // was fully unpowered, so its battery-backed domain is gone - config AND ephemeris alike.
+        // Re-apply the FULL config, constellation mask included. $CFGSYS is otherwise only ever sent
+        // from setup(), i.e. once per boot, so skipping it here left the module running factory-default
+        // constellations (no L5, no SBAS/QZSS, reduced GNSS set) for every wake of the rest of the boot
+        // - which is what made 6h re-acquisitions fail against the search cap on a clean signal.
+        // Passing false to "preserve hot-start data" was self-defeating: there is no hot-start data to
+        // preserve on this path (and if there were, the CFGMSG re-send below would be unnecessary too).
+        // CFGSYS resets the receiver, but it already came up cold here, so that costs nothing.
+        if ((oldState == GPS_HARDSLEEP || oldState == GPS_OFF) && GPSInitFinished && gnssModel == GNSS_MODEL_UC6580) {
+            delay(500); // let the module boot before configuring it
+            // A module that keeps streaming NMEA without ever fixing evades the silence watchdog,
+            // and field use has shown (the 6h incident above) that the per-wake rail cycle alone does not
+            // clear such a state - e.g. when leakage through the powered UART TX line keeps the
+            // "unpowered" module browned-out instead of truly reset. After two consecutive fixless
+            // windows, add the one lever this path does not already exercise: the RESET pin, pulsed
+            // right before the full config re-send below. Costs 650ms per wake while fixless - that
+            // includes a genuinely skyless node (indoors), where it is harmless: every wake on this
+            // rail-cut board is a cold start anyway, and the failure backoff caps wakes at ~1/h.
+            if (fixlessWindows >= 2 || hardRecoveryRequested) {
+                LOG_WARN("GPS: %u consecutive fixless windows%s; pulsing RESET before reconfig", fixlessWindows,
+                         hardRecoveryRequested ? " (hard recovery requested)" : "");
+                hardwareReset();
+                hardRecoveryRequested = false;
+            }
+            reapplyModuleConfig(true);
+            // Already failing: turn the GSV stream back on (reapplyModuleConfig just disabled it)
+            // so this window can report what the antenna actually hears. Sats-in-view with a real
+            // C/N0 means the RF path works and the module cannot solve; nothing in view with zero
+            // C/N0 means it hears no satellite at all - antenna, cable or front-end.
+            // One failed window is enough to want the antenna verdict (the RESET escalation above
+            // stays at 2 - resetting eagerly is wasteful, asking the module what it hears is not).
+            gsvDiagOn = (fixlessWindows >= 1);
+            if (gsvDiagOn) {
+                _serial_gps->write("$CFGMSG,0,3,1\r\n"); // GSV on, 1 Hz
+                delay(250);
+            }
+        }
+#endif // GPS_WAKE_LOSES_MODULE_CONFIG
         break;
 
     case GPS_SOFTSLEEP:
@@ -1366,6 +1577,44 @@ void GPS::down()
         scheduling.informGotLock();
     else
         scheduling.informSearchFailed();
+    // A window is only productive if a fix actually got published - see the flag's rationale in
+    // GPS.h: hasValidLocation/gotTime at down() time misclassify both an always-on node's good
+    // windows (final-tick zeroing race) and a garbage-date window (stale gotTime).
+    if (windowSawAcceptedFix) {
+        fixlessWindows = 0;
+        windowsAccepted++;
+    } else {
+        if (fixlessWindows < UINT8_MAX)
+            fixlessWindows++;
+    }
+    // Snapshot the window for remote diagnostics, BEFORE the setPowerState() below: the
+    // ACTIVE/IDLE entry path re-baselines wedgeRecoveryAttempts and the window counters.
+    // TinyGPS age() returns ULONG_MAX for a field that was never valid; cap for readable output.
+    lastWindowDiag_.windows++;
+    lastWindowDiag_.durationS = (millis() - windowStartedMs) / 1000;
+    lastWindowDiag_.nmeaOk = reader.passedChecksum() - nmeaOkAtWindowStart;
+    lastWindowDiag_.nmeaBad = reader.failedChecksum() - nmeaBadAtWindowStart;
+    lastWindowDiag_.fixQual = fixQual;
+    lastWindowDiag_.sats = (uint8_t)reader.satellites.value();
+    lastWindowDiag_.hdop = (uint32_t)reader.hdop.value();
+    lastWindowDiag_.locAgeS = (reader.location.age() / 1000 > 99999) ? 99999 : reader.location.age() / 1000;
+    lastWindowDiag_.dateAgeS = (reader.date.age() / 1000 > 99999) ? 99999 : reader.date.age() / 1000;
+    lastWindowDiag_.accepted = windowSawAcceptedFix;
+    lastWindowDiag_.fixless = fixlessWindows;
+    lastWindowDiag_.wedgeResets = wedgeRecoveryAttempts;
+    lastWindowDiag_.gsvInView = gsvInView;
+    lastWindowDiag_.gsvMaxSnr = gsvMaxSnr;
+    lastWindowDiag_.gsvTracked = gsvTracked;
+    lastWindowDiag_.txDuring =
+        RadioLibInterface::instance ? (RadioLibInterface::instance->txGood - txAtWindowStart) : 0;
+    if (!windowSawAcceptedFix) {
+        // One line that tells apart the module states this failure can hide: total silence
+        // (nmeaOk static across lines), quality-0 streaming (fixQual 0, ages small), dropped
+        // RMC (dateAge huge while locAge small), bogus hdop (fixQual good, hdop 0).
+        LOG_WARN("GPS window ended without an accepted fix (x%u): nmeaOk=%u nmeaBad=%u fixQual=%u hdop=%u locAge=%u dateAge=%u",
+                 fixlessWindows, (unsigned)reader.passedChecksum(), (unsigned)reader.failedChecksum(), fixQual,
+                 (unsigned)reader.hdop.value(), (unsigned)reader.location.age(), (unsigned)reader.date.age());
+    }
     uint32_t predictedSearchDuration = scheduling.predictedSearchDurationMs();
     uint32_t sleepTime = scheduling.msUntilNextSearch();
     uint32_t updateInterval = Default::getConfiguredOrDefaultMs(config.position.gps_update_interval);
@@ -1426,6 +1675,180 @@ void GPS::publishUpdate()
     }
 }
 
+// Hard-reset the GNSS module via its reset line, if wired. The 10ms pulse used
+// during probing is enough for a healthy module, but reviving a wedged UC6580
+// needs >100ms low (per the Heltec variant notes).
+void GPS::hardwareReset()
+{
+#if defined(PIN_GPS_RESET) && (PIN_GPS_RESET != -1)
+    LOG_INFO("Pulse GPS hardware reset");
+    hwResets++;
+    digitalWrite(PIN_GPS_RESET, GPS_RESET_MODE);
+    delay(150);
+    digitalWrite(PIN_GPS_RESET, !GPS_RESET_MODE);
+    delay(500); // let the module boot before we talk to it (config sent blind, no ack)
+#endif
+}
+
+// Extract satellites-in-view and peak C/N0 from one GSV sentence. Hand-rolled rather than via
+// TinyGPSCustom because this build compiles custom fields out (TINYGPS_OPTION_NO_CUSTOM_FIELDS).
+// Format: $xxGSV,numMsgs,msgNum,satsInView,{satId,elev,azim,snr}x1..4*cs - so field 3 is the count
+// and every 4th field from 7 is a C/N0 (blank when that satellite is seen but not tracked).
+void GPS::scanLineForGsv(const char *line, unsigned int len)
+{
+    if (len < 10 || line[0] != '$')
+        return;
+    // Talker ID varies by constellation (GP/GL/GA/GB/GN...), so match the sentence type only
+    if (strncmp(line + 3, "GSV,", 4) != 0)
+        return;
+
+    unsigned int field = 0;
+    unsigned int start = 0;
+    for (unsigned int i = 0; i <= len; i++) {
+        if (i != len && line[i] != ',' && line[i] != '*')
+            continue;
+        if (field == 2 && i > start) {
+            // Message 1 of N starts this talker's group: restart the tracked tally, so gsvTracked
+            // ends up "the best single constellation" instead of a sum over repeated GSV cycles.
+            if (atoi(line + start) == 1)
+                gsvGroupTracked = 0;
+        } else if (field == 3 && i > start) {
+            // Each constellation sends its OWN GSV group with its own in-view count ($GPGSV,
+            // $GLGSV, $GBGSV, $GAGSV...). Keeping the last one made the reported figure jump
+            // around by constellation; keep the largest seen this window instead.
+            const int inView = atoi(line + start);
+            if (inView >= 0 && inView < 255 && (gsvInView == 255 || (uint8_t)inView > gsvInView))
+                gsvInView = (uint8_t)inView;
+        } else if (field >= 7 && ((field - 7) % 4) == 0 && i > start) {
+            const int snr = atoi(line + start);
+            if (snr > 0 && snr < 100) {
+                if ((uint8_t)snr > gsvMaxSnr)
+                    gsvMaxSnr = (uint8_t)snr;
+                // "In view" can be almanac-predicted; only a real C/N0 proves the antenna hears it,
+                // and a fix needs FOUR usable satellites. This count is what separates "RF path weak"
+                // from "RF path unusable".
+                if (snr >= GPS_GSV_TRACKED_SNR_MIN) {
+                    gsvGroupTracked++;
+                    if (gsvGroupTracked > gsvTracked)
+                        gsvTracked = gsvGroupTracked;
+                }
+            }
+        }
+        if (i != len && line[i] == '*')
+            break; // checksum reached; nothing useful past it
+        field++;
+        start = i + 1;
+    }
+}
+
+// Live counterpart of the WindowDiag snapshot - see the struct's rationale in GPS.h.
+GPS::LiveDiag GPS::liveDiag()
+{
+    LiveDiag d;
+    d.powerState = (uint8_t)powerState;
+    d.hasGps = hasGPS;
+    d.gotTime = gotTime;
+    d.hasValidLoc = hasValidLocation;
+    d.windowElapsedS = (powerState == GPS_ACTIVE) ? (millis() - windowStartedMs) / 1000 : 0;
+    d.nmeaOk = reader.passedChecksum();
+    d.nmeaBad = reader.failedChecksum();
+    d.fixQual = fixQual;
+    d.sats = (uint8_t)reader.satellites.value();
+    d.hdop = (uint32_t)reader.hdop.value();
+    d.locAgeS = (reader.location.age() / 1000 > 99999) ? 99999 : reader.location.age() / 1000;
+    d.dateAgeS = (reader.date.age() / 1000 > 99999) ? 99999 : reader.date.age() / 1000;
+    d.fixless = fixlessWindows;
+    d.windowsTotal = lastWindowDiag_.windows;
+    d.windowsAccepted = windowsAccepted;
+    d.hwResets = hwResets;
+    d.rejDate = rejDate;
+    d.rejStale = rejStale;
+    d.rejHdop = rejHdop;
+    d.rejCoord = rejCoord;
+    d.rtcFallbackPub = rtcFallbackPub;
+    d.gsvInView = gsvInView;
+    d.gsvMaxSnr = gsvMaxSnr;
+    d.gsvTracked = gsvTracked;
+    return d;
+}
+
+// Re-send the model-specific runtime configuration. The UC6580 keeps these
+// settings in battery-backed RAM only: they are gone after any module-side reset
+// or brownout (upstream #5088), so this must be repeatable at runtime.
+void GPS::reapplyModuleConfig(bool includeSystemConfig)
+{
+    if (gnssModel == GNSS_MODEL_UC6580) {
+        if (includeSystemConfig) {
+            // The Unicore UC6580 can use a lot of sat systems, enable it to
+            // use GPS L1 & L5 + BDS B1I & B2a + GLONASS L1 + GALILEO E1 & E5a + SBAS + QZSS
+            // This will reset the receiver, so wait a bit afterwards
+            // The paranoid will wait for the OK*04 confirmation response after each command.
+            _serial_gps->write("$CFGSYS,h35155\r\n");
+            delay(750);
+        }
+        // Must be done after the CFGSYS command
+        // Turn off GSV messages, we don't really care about which and where the sats are, maybe someday.
+        _serial_gps->write("$CFGMSG,0,3,0\r\n");
+        delay(250);
+        // Turn off GSA messages, TinyGPS++ doesn't use this message.
+        _serial_gps->write("$CFGMSG,0,2,0\r\n");
+        delay(250);
+        // Turn off NOTICE __TXT messages, these may provide Unicore some info but we don't care.
+        _serial_gps->write("$CFGMSG,6,0,0\r\n");
+        delay(250);
+        _serial_gps->write("$CFGMSG,6,1,0\r\n");
+        delay(250);
+    }
+}
+
+// A healthy module streams valid NMEA continuously whenever it is powered, so
+// sustained silence while GPS_ACTIVE means the module has wedged (seen on UC6580
+// after days of uptime, upstream #5088). Pulse reset and re-apply the config
+// instead of burning the whole search window against a dead module.
+void GPS::checkWedgeWatchdog()
+{
+    // Recovery is only implemented for the UC6580 (the module this wedge is observed
+    // on). Other reset-pin boards (L76K, ATGM336H) hold their config in RAM: a blind
+    // hardware reset would leave them running factory defaults until reboot.
+    if (gnssModel != GNSS_MODEL_UC6580)
+        return;
+
+    if (powerState != GPS_ACTIVE) {
+        silenceStartedMsec = 0; // re-arm for the next active window
+        wedgeRecoveryAttempts = 0;
+        return;
+    }
+
+    uint32_t sentences = reader.passedChecksum();
+    if (silenceStartedMsec == 0 || sentences != sentencesAtSilenceStart) {
+        silenceStartedMsec = millis();
+        sentencesAtSilenceStart = sentences;
+        return;
+    }
+
+    if ((uint32_t)(millis() - silenceStartedMsec) < GPS_SILENCE_RECOVERY_MS)
+        return;
+
+    if (wedgeRecoveryAttempts >= GPS_WEDGE_RECOVERY_MAX)
+        return; // out of attempts for this window; next wake starts fresh
+
+    wedgeRecoveryAttempts++;
+    LOG_WARN("GPS emitted no valid NMEA for %us while active; hardware recovery attempt %u/%u",
+             (unsigned)(GPS_SILENCE_RECOVERY_MS / 1000), wedgeRecoveryAttempts, GPS_WEDGE_RECOVERY_MAX);
+    if (wedgeRecoveryAttempts > 1) {
+        // Escalate: a reset pulse alone didn't help, power-cycle the module rail too
+        writePinEN(false);
+        delay(500);
+        writePinEN(true);
+        delay(500);
+    }
+    hardwareReset();
+    reapplyModuleConfig(true);
+    clearBuffer();
+    silenceStartedMsec = millis();
+    sentencesAtSilenceStart = reader.passedChecksum();
+}
+
 int32_t GPS::runOnce()
 {
     if (!GPSInitFinished) {
@@ -1433,17 +1856,88 @@ int32_t GPS::runOnce()
             LOG_INFO("GPS set to not-present. Skip probe");
             return disable();
         }
+        // Waking for a probe retry: re-power the module and restart the search clock.
+        // Without informSearching() here, a probe succeeding minutes after boot starts
+        // with elapsedSearchMs() already past searchedTooLong()'s cap, and the first
+        // active window would immediately time out and defer the fix a full interval.
+        if (powerState != GPS_ACTIVE)
+            up();
         if (!setup())
             return currentDelay; // Setup failed, re-run in two seconds
 
         if (gnssModel == GNSS_MODEL_UNKNOWN) {
+#if defined(GPS_UC6580)
+            // A wedged UC6580 (upstream #5088) probes as absent but can come back after a hard
+            // reset, so retry periodically instead of disabling GPS until the next reboot: on a
+            // headless node that silence is otherwise permanent.
+            //
+            // Scoped to boards that actually carry that module. "Probe found nothing" cannot tell a
+            // wedged module from an empty footprint, so an ungated retry made every board with a GPS
+            // UART and no module populated pay for a UC6580 quirk: 8 walks x 9 probe() sequences
+            // (each with serial end()/begin(), delay(100) and a 500ms response wait) plus a 650ms
+            // blocking hardwareReset() per retry, spread over ~105 minutes. That is a real cost on
+            // e.g. nrf52_promicro_diy_tcxo, an L76K DIY board routinely built with no GNSS fitted
+            // yet defaulting to gps_mode ENABLED (NodeDB sets that whenever GPS_RX_PIN exists).
+            // Everything else keeps upstream's cheap give-up below.
+            probeRetryCount++;
+            if (probeRetryCount >= GPS_PROBE_RETRY_MAX) {
+                LOG_WARN("GPS not detected after %u probe walks; marked not present for this boot", (unsigned)probeRetryCount);
+                return disable(); // powers the rail down (GPS_OFF) and parks the thread
+            }
+            LOG_WARN("GPS not detected (probe walk %u/%u); reset module and re-probe in %u min", (unsigned)probeRetryCount,
+                     (unsigned)GPS_PROBE_RETRY_MAX, (unsigned)(GPS_PROBE_RETRY_MS / 60000));
+            hardwareReset();
+            probeTries = 0; // re-arm the full probe walk (speedSelect has walked past the
+            speedSelect = 0; // end of rareSerialSpeeds; indexing again without this would overrun)
+            currentStep = 0;
+            // Power the module rail down while we wait: keeps a battery node honest
+            // (the old give-up path cut the rail via disable()) and the long EN-off
+            // span doubles as a full power cycle for a wedged module.
+            setPowerState(GPS_HARDSLEEP, GPS_PROBE_RETRY_MS);
+            return GPS_PROBE_RETRY_MS;
+#else  // !defined(GPS_UC6580) - upstream behaviour: one walk, then give up for the boot
             LOG_WARN("GPS not detected; marked not present for this boot");
+#ifdef T_DECK_MAX
+            // disable()'s GPS_OFF power-down chain is a no-op on this board (no PIN_GPS_EN /
+            // PMU / standby pin, and the u-blox soft-off needs a *detected* model): the XL9555
+            // rail would stay HIGH with the abandoned module parked in indoor acquisition at
+            // ~25-30mA for the rest of the boot. Cut the rail hard; the menu GPS toggle or the
+            // next boot re-applies the normal gps_mode policy.
+            tdeckmaxGpsRailOff("probe failed; module abandoned for this boot");
+#endif
             return disable();
+#endif // defined(GPS_UC6580)
         }
 
         // We have now loaded our saved preferences from flash
         if (config.position.gps_mode != meshtastic_Config_PositionConfig_GpsMode_ENABLED) {
+#ifdef T_DECK_MAX
+            // NOTE (hardware verdict, 2026-08-07): the boot-time RTC grab that lived here is
+            // GONE. This board omits the module's RTC crystal (RTC_I/RTC_O unconnected), and
+            // per the MIA-M10Q integration manual an RTC-less design CANNOT maintain time
+            // through a VCC-off period - V_BCKP only preserves BBR (ephemeris/config). After a
+            // rail cut the module always reports the 2021 firmware-default epoch with the
+            // validity bits clear (hardware-observed), so holding the rail 8s to ask was pure
+            // cost. The manual's prescribed pattern for such designs is TIME AIDING instead:
+            // see injectAidingToModule below, and the module-held-time grab in the ACTIVE
+            // path (useful after a reset while the rail stayed powered).
+            // Inverse of the grab: if the SYSTEM knows time (carried across a reboot by the
+            // ESP32 RTC domain, or already learned from the mesh) but the module's backup
+            // domain is empty, seed the module now - the VDD3V3 trickle keeps its RTC running
+            // from here on, so later boots (and warm starts) get time back from the grab above.
+            // Explicit call: the pre-sleep hook in setPowerState may not see an awake oldState
+            // on this early boot path.
+            injectAidingToModule("boot, pre rail-down");
+            // The boot probe intentionally ran with the rail UP (lateInitVariant leaves it on
+            // even for DISABLED) so the module is now DETECTED: disable() below can deliver the
+            // u-blox soft-sleep, and a later menu re-enable works without a reboot. With the
+            // module gracefully asleep, cut its power + arm the TX back-power guard.
+            const int32_t res = disable();
+            tdeckmaxGpsRailOff("gps_mode disabled; module detected, soft-slept, powered down");
+            return res;
+#else
             return disable();
+#endif
         }
         GPSInitFinished = true;
         publishUpdate();
@@ -1477,6 +1971,9 @@ int32_t GPS::runOnce()
         setConnected();
     }
 
+    // Recover the module if it has gone silent while it should be delivering NMEA
+    checkWedgeWatchdog();
+
     // If we're due for an update, wake the GPS
     if (!config.position.fixed_position && powerState != GPS_ACTIVE && scheduling.isUpdateDue())
         up();
@@ -1486,6 +1983,10 @@ int32_t GPS::runOnce()
     uint8_t prev_fixQual = fixQual;
 
     if (powerState == GPS_ACTIVE) {
+        // Boot-window time recovery: a module whose rail stayed powered across an ESP reset
+        // still holds real time (pre-fix NMEA can't deliver it; NAV-PVT can). Self-bounded.
+        pollModuleHeldTime();
+
         // if gps_update_interval is <=10s, GPS never goes off, so we treat that differently
         uint32_t updateInterval = Default::getConfiguredOrDefaultMs(config.position.gps_update_interval);
 
@@ -1505,6 +2006,7 @@ int32_t GPS::runOnce()
             if (updateInterval <= GPS_UPDATE_ALWAYS_ON_THRESHOLD_MS) {
                 hasValidLocation = true;
                 shouldPublish = true;
+                windowSawAcceptedFix = true;
             } else if (!hasValidLocation || prev_fixQual == 0 || (fixHoldEnds + GPS_THREAD_INTERVAL) < millis()) {
                 hasValidLocation = true;
                 // Hold for up to 20secs after getting a lock to download ephemeris etc
@@ -1537,6 +2039,20 @@ int32_t GPS::runOnce()
         if (shouldPublish || tooLong || holdExpired) {
             if (gotTime && hasValidLocation) {
                 shouldPublish = true;
+                windowSawAcceptedFix = true;
+            } else if (hasValidLocation && !gotTime && (tooLong || holdExpired) && getRTCQuality() >= RTCQualityFromNet) {
+                // #5088-class garbage-date fault: the module produced fixes that passed every
+                // location gate this window, but never a plausible RMC date, so the branch above
+                // would discard the whole window and localPosition would silently age out to the
+                // stale limit. Only the GPS clock is untrustworthy here - and this node has mesh
+                // time, so stamp the fix with that and publish rather than throw it away. Kept at
+                // window end (tooLong/holdExpired) so a real GPS date gets the whole window to
+                // arrive first. Counted in LiveDiag (rtcFallbackPub) for remote diagnostics.
+                p.timestamp = getValidTime(RTCQualityFromNet);
+                rtcFallbackPub++;
+                LOG_WARN("GPS fix has no plausible date; publish with mesh-RTC time instead (x%u)", (unsigned)rtcFallbackPub);
+                shouldPublish = true;
+                windowSawAcceptedFix = true;
             }
             if (shouldPublish) {
                 fixHoldEnds = 0;
@@ -1545,6 +2061,12 @@ int32_t GPS::runOnce()
 
             // There's a chance we just got a time, so keep going to see if we can get a location too
             if (tooLong || holdExpired) {
+                // Trap-entry signature: the module produced an acceptable fix this window but never a
+                // plausible date/time, and the mesh-RTC fallback above could not publish it either
+                // (no net-quality time on this node). Make it loud - the module is emitting fixes
+                // with garbage dates (#5088-class fault) and localPosition is silently aging.
+                if (hasValidLocation && !gotTime && !windowSawAcceptedFix)
+                    LOG_WARN("GPS window ended with a fix but no plausible date/time; fix NOT published");
                 down();
             }
 
@@ -2033,6 +2555,7 @@ The Unix epoch (or Unix time or POSIX time or Unix timestamp) is the number of s
         t.tm_isdst = false;
         if (t.tm_mon > -1) {
             if (!isPlausibleNmeaTime(t)) {
+                rejDate++; // #5088 signature: module talks, but its clock is garbage
                 return false;
             }
             if (perhapsSetRTC(RTCQualityGPS, t) == RTCSetResultSuccess) {
@@ -2104,6 +2627,7 @@ bool GPS::lookForLocation()
 #endif
           (reader.time.age() < GPS_SOL_EXPIRY_MS) && (reader.date.age() < GPS_SOL_EXPIRY_MS))) {
         LOG_WARN("SOME data is TOO OLD: LOC %u, TIME %u, DATE %u", reader.location.age(), reader.time.age(), reader.date.age());
+        rejStale++; // e.g. RMC dropped from the stream while GGA still fixes
         return false;
     }
 
@@ -2115,12 +2639,14 @@ bool GPS::lookForLocation()
 #ifdef GPS_DEBUG
         LOG_DEBUG("Bail out EARLY on LAT %i", toDegInt(loc.lat));
 #endif
+        rejCoord++;
         return false;
     }
     if (toDegInt(loc.lng) > 1800000000) {
 #ifdef GPS_DEBUG
         LOG_DEBUG("Bail out EARLY on LNG %i", toDegInt(loc.lng));
 #endif
+        rejCoord++;
         return false;
     }
 
@@ -2140,6 +2666,7 @@ bool GPS::lookForLocation()
     // Discard incomplete or erroneous readings
     if (reader.hdop.value() == 0) {
         LOG_WARN("BOGUS hdop.value() REJECTED: %d", reader.hdop.value());
+        rejHdop++;
         return false;
     }
 
@@ -2229,6 +2756,10 @@ bool GPS::whileActive()
         if (charsInBuf > sizeof(UBXscratch) - 10 || c == '\r') {
             if (strnstr((char *)UBXscratch, "$GPTXT,01,01,02,u-blox ag - www.u-blox.com*50", charsInBuf)) {
                 rebootsSeen++;
+            }
+            if (gsvDiagOn) {
+                UBXscratch[charsInBuf] = '\0'; // bound the atoi()s in the scanner (charsInBuf < sizeof-10)
+                scanLineForGsv((const char *)UBXscratch, charsInBuf);
             }
             charsInBuf = 0;
         } else {

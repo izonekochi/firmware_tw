@@ -18,6 +18,14 @@
 #define MESSAGE_AUTOSAVE_INTERVAL_SEC (2 * 60 * 60)
 #endif
 
+// How many of the newest messages each flash save persists. Defaults to the whole RAM history;
+// large-PSRAM devices override (-DMESSAGE_FLASH_SAVE_LIMIT=N) so a big in-RAM history doesn't
+// mean big flash writes. Hard cap 255: the on-disk count field is one byte.
+#ifndef MESSAGE_FLASH_SAVE_LIMIT
+#define MESSAGE_FLASH_SAVE_LIMIT MAX_MESSAGES_SAVED
+#endif
+static_assert(MESSAGE_FLASH_SAVE_LIMIT <= 255, "on-disk message count field is uint8_t");
+
 // Global message text pool and state
 static char *g_messagePool = nullptr;
 static size_t g_poolWritePos = 0;
@@ -26,7 +34,15 @@ static size_t g_poolWritePos = 0;
 static inline void resetMessagePool()
 {
     if (!g_messagePool) {
+#if defined(ARCH_ESP32) && defined(BOARD_HAS_PSRAM)
+        // Large-history devices (-DMESSAGE_HISTORY_LIMIT) put the text pool in PSRAM, keeping
+        // internal heap free. Fall back to the normal heap when PSRAM is absent/exhausted.
+        g_messagePool = static_cast<char *>(heap_caps_malloc(MESSAGE_TEXT_POOL_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!g_messagePool)
+            g_messagePool = static_cast<char *>(malloc(MESSAGE_TEXT_POOL_SIZE));
+#else
         g_messagePool = static_cast<char *>(malloc(MESSAGE_TEXT_POOL_SIZE));
+#endif
         if (!g_messagePool) {
             LOG_ERROR("MessageStore: Failed to allocate %d bytes for message pool", MESSAGE_TEXT_POOL_SIZE);
             memaudit::set("msgstore", 0);
@@ -265,6 +281,31 @@ bool MessageStore::appendTextById(uint32_t id, const std::string &suffix)
 }
 
 // Add a broadcast message with explicit fields (used for store-and-forward rebroadcasts)
+// Inject a locally-generated entry into a DM thread (e.g. the traceroute result, attributed to
+// the traced node so it lands in that peer's chat window). Timestamp is assigned here (RTC or
+// boot-relative), unlike addBroadcast where the store-and-forward caller supplies it.
+const StoredMessage &MessageStore::addDirect(uint32_t sender, uint32_t dest, const std::string &text)
+{
+    StoredMessage sm;
+    sm.id = 0; // no source packet
+    assignTimestamp(sm);
+    sm.sender = sender;
+    sm.channelIndex = 0;
+    sm.dest = dest;
+    sm.type = MessageType::DM_TO_US;
+    sm.ackStatus = AckStatus::ACKED;
+    size_t len = text.size();
+    if (len >= MAX_MESSAGE_SIZE)
+        len = MAX_MESSAGE_SIZE - 1;
+    sm.textOffset = storeTextInPool(text.c_str(), text.size());
+    sm.textLength = static_cast<uint16_t>(len);
+    addLiveMessage(std::move(sm));
+#if ENABLE_MESSAGE_PERSISTENCE
+    markMessageStoreUnsaved();
+#endif
+    return liveMessages.back();
+}
+
 const StoredMessage &MessageStore::addBroadcast(uint32_t id, uint32_t sender, uint8_t channelIndex, uint32_t timestamp,
                                                 const std::string &text)
 {
@@ -362,13 +403,20 @@ void MessageStore::saveToFlash()
     SafeFile f(filename.c_str(), false);
 
     spiLock->lock();
-    uint8_t count = static_cast<uint8_t>(liveMessages.size());
-    if (count > MAX_MESSAGES_SAVED)
-        count = MAX_MESSAGES_SAVED;
+    // Persist at most MESSAGE_FLASH_SAVE_LIMIT of the NEWEST messages: large-PSRAM devices keep
+    // hundreds in RAM but shouldn't rewrite them all to flash every autosave. (Also fixes the
+    // truncation direction: liveMessages is oldest-first, so a plain [0..count) slice would
+    // have dropped the newest messages, not the oldest.)
+    size_t total = liveMessages.size();
+    size_t keep = total;
+    if (keep > MESSAGE_FLASH_SAVE_LIMIT)
+        keep = MESSAGE_FLASH_SAVE_LIMIT;
+    const size_t start = total - keep;
+    uint8_t count = static_cast<uint8_t>(keep);
     f.write(&count, 1);
 
     for (uint8_t i = 0; i < count; ++i) {
-        writeMessageRecord(f, liveMessages[i]);
+        writeMessageRecord(f, liveMessages[start + i]);
     }
     spiLock->unlock();
 

@@ -40,10 +40,10 @@ TwoButton *TwoButton::getInstance()
 void TwoButton::start()
 {
     if (buttons[0].pin != 0xFF)
-        attachInterrupt(buttons[0].pin, TwoButton::isrPrimary, buttons[0].activeLogic == LOW ? FALLING : RISING);
+        attachInterrupt(buttons[0].pin, TwoButton::isrPrimary, CHANGE); // both edges: press registers, release latches
 
     if (buttons[1].pin != 0xFF)
-        attachInterrupt(buttons[1].pin, TwoButton::isrSecondary, buttons[1].activeLogic == LOW ? FALLING : RISING);
+        attachInterrupt(buttons[1].pin, TwoButton::isrSecondary, CHANGE); // both edges: press registers, release latches
 }
 
 // Stop receiving button input, and run custom sleep code
@@ -134,6 +134,10 @@ void TwoButton::setHandlerLongPress(uint8_t whichButton, Callback onLongPress)
 
 // Handle the start of a press to the primary button
 // Wakes our button thread
+#if defined(T_DECK_MAX) && defined(MESHTASTIC_INCLUDE_INKHUD)
+extern bool inkhudScreenAwake; // InkHUD sleep-UX flag (declared in InkHUD.h); plain read, ISR-safe
+#endif
+
 void TwoButton::isrPrimary()
 {
     static volatile bool isrRunning = false;
@@ -141,10 +145,30 @@ void TwoButton::isrPrimary()
     if (!isrRunning) {
         isrRunning = true;
         TwoButton *b = TwoButton::getInstance();
-        if (b->buttons[0].state == State::REST) {
-            b->buttons[0].state = State::IRQ;
-            b->buttons[0].irqAtMillis = millis();
-            b->startThread();
+        if (digitalRead(b->buttons[0].pin) == b->buttons[0].activeLogic) {
+            // Press edge. Ignore edges within debounceLength of the last release edge: that's
+            // contact bounce, and a bounce registered here becomes a phantom press whose
+            // EVENT_PRESS re-wakes the FSM immediately after a deliberate sleep press.
+            if (b->buttons[0].state == State::REST &&
+                (uint32_t)(millis() - b->buttons[0].lastReleaseMs) >= b->buttons[0].debounceLength) {
+#if defined(T_DECK_MAX) && defined(MESHTASTIC_INCLUDE_INKHUD)
+                // First registration of this press: capture the sleep state BEFORE any wake
+                // processing (PowerFSM's LS-wake EVENT_PRESS runs later, in thread context)
+                b->buttons[0].pressWhileAsleep = !inkhudScreenAwake;
+#endif
+                b->buttons[0].releaseSeen = false;
+                b->buttons[0].state = State::IRQ;
+                b->buttons[0].irqAtMillis = millis();
+                b->startThread();
+            }
+        } else {
+            // Release edge: stamp it (unconditionally - bounce re-stamps extend the guard above
+            // through the whole bounce train), and latch it, so a poll thread stalled behind a
+            // blocking e-ink refresh still learns the press ENDED (else clicks merge into a
+            // phantom hold)
+            b->buttons[0].lastReleaseMs = millis();
+            if (b->buttons[0].state != State::REST)
+                b->buttons[0].releaseSeen = true;
         }
         isrRunning = false;
     }
@@ -159,10 +183,19 @@ void TwoButton::isrSecondary()
     if (!isrRunning) {
         isrRunning = true;
         TwoButton *b = TwoButton::getInstance();
-        if (b->buttons[1].state == State::REST) {
-            b->buttons[1].state = State::IRQ;
-            b->buttons[1].irqAtMillis = millis();
-            b->startThread();
+        if (digitalRead(b->buttons[1].pin) == b->buttons[1].activeLogic) {
+            // see isrPrimary: bounce guard rejects press edges within debounceLength of a release
+            if (b->buttons[1].state == State::REST &&
+                (uint32_t)(millis() - b->buttons[1].lastReleaseMs) >= b->buttons[1].debounceLength) {
+                b->buttons[1].releaseSeen = false;
+                b->buttons[1].state = State::IRQ;
+                b->buttons[1].irqAtMillis = millis();
+                b->startThread();
+            }
+        } else {
+            b->buttons[1].lastReleaseMs = millis();
+            if (b->buttons[1].state != State::REST)
+                b->buttons[1].releaseSeen = true; // see isrPrimary: stall-proof release latch
         }
         isrRunning = false;
     }
@@ -224,12 +257,27 @@ int32_t TwoButton::runOnce()
         case POLLING_UNFIRED: {
             uint32_t length = millis() - buttons[i].irqAtMillis;
 
-            // If button released since last thread tick,
-            if (digitalRead(buttons[i].pin) != buttons[i].activeLogic) {
+            // Released? Trust the ISR-latched release edge FIRST: poll ticks can stall for
+            // seconds behind a blocking e-ink refresh, and the pin may already be DOWN again
+            // with the NEXT click by the time we run.
+            if (buttons[i].releaseSeen || digitalRead(buttons[i].pin) != buttons[i].activeLogic) {
+                bool sawEdge = buttons[i].releaseSeen;
+                buttons[i].releaseSeen = false;
                 buttons[i].onUp();              // Run callback: press has ended (possible release of a hold)
                 buttons[i].state = State::REST; // Mark that the button has reset
-                if (length > buttons[i].debounceLength && length < buttons[i].longpressLength) // If too short for longpress,
-                    buttons[i].onShortPress();                                                 // Run callback: short press
+                // Short press: for an ISR-latched release the measured length may span the
+                // stall, but a physical release DID occur - it cannot have been a 2s hold.
+                if (length > buttons[i].debounceLength && (sawEdge || length < buttons[i].longpressLength))
+                    buttons[i].onShortPress(); // Run callback: short press
+                // If a NEW press is already in progress (its edge was ignored while we were
+                // mid-press), register it now so it isn't lost. Bounce guard as in the ISR: a
+                // LOW read within debounceLength of the release edge is bounce, not a new press.
+                if (digitalRead(buttons[i].pin) == buttons[i].activeLogic &&
+                    (uint32_t)(millis() - buttons[i].lastReleaseMs) >= buttons[i].debounceLength) {
+                    buttons[i].state = State::IRQ;
+                    buttons[i].irqAtMillis = millis();
+                    awaitingRelease = true;
+                }
             }
 
             // If button not yet released
@@ -248,8 +296,9 @@ int32_t TwoButton::runOnce()
         // Button still held, but duration long enough that longpress event already fired
         // Just waiting for release
         case POLLING_FIRED:
-            // Release detected
-            if (digitalRead(buttons[i].pin) != buttons[i].activeLogic) {
+            // Release detected (ISR-latched edge, or live pin level)
+            if (buttons[i].releaseSeen || digitalRead(buttons[i].pin) != buttons[i].activeLogic) {
+                buttons[i].releaseSeen = false;
                 buttons[i].state = State::REST;
                 buttons[i].onUp(); // Callback: release of hold (in this case: *after* longpress has fired)
             }

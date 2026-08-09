@@ -4,6 +4,9 @@
 
 #include "./Applet.h"
 
+#if defined(T_DECK_MAX)
+#include "./Applets/System/BatteryIcon/BatteryIconApplet.h" // drawHeader: corner-cluster occupiedWidth()
+#endif
 #include "main.h"
 
 #include "gps/RTC.h"
@@ -1083,6 +1086,19 @@ void InkHUD::Applet::drawHeader(const std::string &text)
     }
 
     // Dither near battery
+#if defined(T_DECK_MAX)
+    // The corner cluster ([GPS][moon][battery]) is right-aligned in a widened tile and its
+    // occupancy is dynamic; ask the applet for the true occupied span so the dither lands at
+    // the cluster's real left edge and header text keeps every free pixel. Zero = corner free.
+    BatteryIconApplet *batteryApplet = (BatteryIconApplet *)inkhud->getSystemApplet("BatteryIcon");
+    const uint16_t cornerOccupiedW = batteryApplet->occupiedWidth();
+    if (cornerOccupiedW) {
+        constexpr uint16_t ditherSizePx = 4;
+        Tile *batteryTile = batteryApplet->getTile();
+        const uint16_t occupiedLeft = batteryTile->getLeft() + batteryTile->getWidth() - cornerOccupiedW;
+        hatchRegion(occupiedLeft - ditherSizePx, batteryTile->getTop(), ditherSizePx, batteryTile->getHeight(), 2, WHITE);
+    }
+#else
     if (settings->optionalFeatures.batteryIcon) {
         constexpr uint16_t ditherSizePx = 4;
         Tile *batteryTile = ((Applet *)inkhud->getSystemApplet("BatteryIcon"))->getTile();
@@ -1091,6 +1107,7 @@ void InkHUD::Applet::drawHeader(const std::string &text)
         const uint16_t batteryTileHeight = batteryTile->getHeight();
         hatchRegion(batteryTileLeft - ditherSizePx, batteryTileTop, ditherSizePx, batteryTileHeight, 2, WHITE);
     }
+#endif
 }
 
 // Get the height of the standard applet header

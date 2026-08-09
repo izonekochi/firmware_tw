@@ -23,9 +23,15 @@ class TraceRouteModule : public ProtobufModule<meshtastic_RouteDiscovery>,
   public:
     TraceRouteModule();
 
-    bool startTraceRoute(NodeNum node);
+    bool startTraceRoute(NodeNum node, uint8_t channel = 0); // channel: which channel carries the request
+                                                             // (KNOWN_ONLY relays refuse unknown channels)
     void launch(NodeNum node);
     void handleTraceRouteResult(const String &result);
+    // Fork (InkHUD builds): drop a "[trace] ..." entry into `target`'s DM chat thread and surface
+    // the DM window (DMChatApplet::onIncomingDM). Used for start/result/timeout feedback, so a
+    // trace launched from the Heard or DM menu plays out visibly in the peer's chat. No-op
+    // outside InkHUD builds.
+    void deliverTraceToChat(NodeNum target, const char *text);
     bool shouldDraw();
 #if HAS_SCREEN
     virtual void drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y) override;
@@ -77,7 +83,15 @@ class TraceRouteModule : public ProtobufModule<meshtastic_RouteDiscovery>,
     unsigned long resultShowTime = 0;
     unsigned long cooldownMs = 30000;
     unsigned long resultDisplayMs = 10000;
-    unsigned long trackingTimeoutMs = 10000;
+    // Multi-hop MEDIUM_FAST round trips regularly take 20-60s; the old 10s window reported
+    // "no response" while the reply was still in flight (and the reply was then dropped).
+    unsigned long trackingTimeoutMs = 60000;
+
+    // Late-reply acceptance: after the tracking window expires, remember the target for a few
+    // minutes so a straggler response still gets formatted + delivered (marked "late reply").
+    NodeNum lateTraceNode = 0;
+    uint32_t lateTraceUntilMs = 0;
+    bool traceIsLate = false;
     String bannerText;
     String resultText;
     std::vector<String> resultLines;

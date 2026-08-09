@@ -152,7 +152,14 @@ void InkHUD::NodeListApplet::onRender(bool full)
         cards.end());
 
     // -- Each node in list --
+#if defined(MOD_INPUT_MENU)
+    const int16_t highlighted = highlightedCard(); // selection border (HeardApplet node-select mode)
+    int16_t cardIndex = -1;                        // deque position, kept aligned with cards.at()
+#endif // defined(MOD_INPUT_MENU)
     for (auto card = cards.begin(); card != cards.end(); ++card) {
+#if defined(MOD_INPUT_MENU)
+        cardIndex++;
+#endif // defined(MOD_INPUT_MENU)
 
         // Gather info
         // ========================================
@@ -177,6 +184,12 @@ void InkHUD::NodeListApplet::onRender(bool full)
             shortName = parseShortName(node);
         else
             shortName = "?";
+
+#if defined(MOD_INPUT_MENU)
+        // Favorite marker (favorites are pinned to the top of the Heard list)
+        if (node && nodeInfoLiteIsFavorite(node))
+            shortName = "*" + shortName;
+#endif // defined(MOD_INPUT_MENU)
 
         // -- Longname --
         // Parse special chars in long name
@@ -239,6 +252,14 @@ void InkHUD::NodeListApplet::onRender(bool full)
 
         resetCrop();
 
+#if defined(MOD_INPUT_MENU)
+        // Selection border (doubled for weight on e-ink)
+        if (cardIndex == highlighted) {
+            drawRect(0, cardTopY, width(), cardH, BLACK);
+            drawRect(1, cardTopY + 1, width() - 2, cardH - 2, BLACK);
+        }
+#endif // defined(MOD_INPUT_MENU)
+
         // Draw separator between cards
         const int16_t separatorY = cardTopY + cardH - 1;
         if (separatorY < height() - 1 && (card + 1) != cards.end()) {
@@ -255,6 +276,20 @@ void InkHUD::NodeListApplet::onRender(bool full)
             break;
     }
 }
+
+#if defined(MOD_INPUT_MENU)
+// How many cards FULLY fit in the applet's current tile (see header). Mirrors the geometry at
+// the top of onRender: cards start below the header divider and stack at cardH each.
+uint8_t InkHUD::NodeListApplet::visibleCards()
+{
+    const int16_t headerDivY = getHeaderHeight() - 1;
+    constexpr uint16_t padDivH = 2;
+    const uint16_t startY = headerDivY + padDivH;
+    if (height() <= startY + cardH)
+        return 1; // degenerate tile: at least the top card is (partially) usable
+    return (uint8_t)((height() - startY) / cardH);
+}
+#endif // defined(MOD_INPUT_MENU)
 
 // Draw element: a "mobile phone" style signal indicator
 // We will calculate values as floats, then "rasterize" at the last moment, relative to x and w, etc

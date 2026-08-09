@@ -21,6 +21,7 @@ class GPSUpdateScheduling
 
   private:
     void updateLockTimePrediction(); // Called from informGotLock
+    bool searching = false;          // Between informSearching() and informGotLock()/informSearchFailed()
     uint32_t searchStartedMs = 0;
     uint32_t searchEndedMs = 0;
     uint32_t searchCount = 0;

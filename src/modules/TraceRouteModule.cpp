@@ -12,9 +12,32 @@
 #include "modules/TrafficManagementModule.h"
 #endif
 
+#if defined(MESHTASTIC_INCLUDE_INKHUD)
+#include "MessageStore.h" // deliverTraceToChat: inject "[trace] ..." rows into the peer's DM thread
+#include "graphics/niche/InkHUD/Applets/User/DMChat/DMChatApplet.h"
+#endif
+
 extern graphics::Screen *screen;
 
 TraceRouteModule *traceRouteModule;
+
+// Fork: traceroute progress/results land in the traced node's DM chat window (user request:
+// launch from the DM or Heard menu, read the outcome in the DM applet). The entry is stored
+// via MessageStore::addDirect - attributed to the peer, so it threads correctly and persists
+// like any received DM - and onIncomingDM claims/surfaces the chat window with its normal
+// autoshow rules. Outside InkHUD builds this is a no-op (BaseUI keeps its OLED frame flow).
+void TraceRouteModule::deliverTraceToChat(NodeNum target, const char *text)
+{
+#if defined(MESHTASTIC_INCLUDE_INKHUD)
+    if (!target || target == NODENUM_BROADCAST)
+        return;
+    messageStore.addDirect(target, nodeDB->getNodeNum(), std::string("[trace] ") + text);
+    NicheGraphics::InkHUD::DMChatApplet::onIncomingDM(target);
+#else
+    (void)target;
+    (void)text;
+#endif
+}
 
 void TraceRouteModule::setResultText(const String &text)
 {
@@ -151,6 +174,18 @@ void TraceRouteModule::alterReceivedProtobuf(meshtastic_MeshPacket &p, meshtasti
     // Set updated route to the payload of the to be flooded packet
     p.decoded.payload.size =
         pb_encode_to_bytes(p.decoded.payload.bytes, sizeof(p.decoded.payload.bytes), &meshtastic_RouteDiscovery_msg, r);
+
+    // Late replies: revive the trace for this packet if it is the response of a trace that
+    // already timed out - it used to be dropped silently after "no response" was reported.
+    if (tracingNode == 0 && lateTraceNode != 0) {
+        if ((int32_t)(millis() - lateTraceUntilMs) >= 0) {
+            lateTraceNode = 0; // acceptance window over
+        } else if (incoming.request_id != 0 && p.from == lateTraceNode) {
+            tracingNode = lateTraceNode; // handleTraceRouteResult() re-clears it below
+            lateTraceNode = 0;
+            traceIsLate = true;
+        }
+    }
 
     if (tracingNode != 0) {
         // check isResponseFromTarget
@@ -527,7 +562,7 @@ const char *TraceRouteModule::getNodeName(NodeNum node)
     return fallback;
 }
 
-bool TraceRouteModule::startTraceRoute(NodeNum node)
+bool TraceRouteModule::startTraceRoute(NodeNum node, uint8_t channel)
 {
     LOG_INFO("=== TraceRoute startTraceRoute CALLED: node=0x%08x ===", node);
     unsigned long now = millis();
@@ -593,6 +628,9 @@ bool TraceRouteModule::startTraceRoute(NodeNum node)
     resultText = "";
     clearResultLines();
     bannerText = String("Tracing ") + getNodeName(node);
+    // Immediate feedback in the peer's DM window (which onIncomingDM surfaces): a trace fired
+    // from the Heard menu would otherwise show nothing until the result lands
+    deliverTraceToChat(node, (String("tracing ") + getNodeName(node) + "...").c_str());
 
     LOG_INFO("TraceRoute UI: Starting trace route to node 0x%08x, requesting focus", node);
 
@@ -611,8 +649,11 @@ bool TraceRouteModule::startTraceRoute(NodeNum node)
     // Allocate a packet directly from router like the reference code
     meshtastic_MeshPacket *p = router->allocForSending();
     if (p) {
-        // Set destination and port
+        // Set destination and port. Channel is caller-selected (InkHUD "Trace via..." picker):
+        // KNOWN_ONLY relays refuse to rebroadcast channels they don't carry, so tracing across
+        // the public mesh needs a public channel even when the target is a fleet node.
         p->to = node;
+        p->channel = channel;
         p->decoded.portnum = meshtastic_PortNum_TRACEROUTE_APP;
         p->decoded.want_response = true;
 
@@ -766,6 +807,8 @@ void TraceRouteModule::launch(NodeNum node)
 
 void TraceRouteModule::handleTraceRouteResult(const String &result)
 {
+    deliverTraceToChat(tracingNode, ((traceIsLate ? String("late reply:\n") : String("")) + result).c_str());
+    traceIsLate = false;
     setResultText(result);
     runState = TRACEROUTE_STATE_RESULT;
     resultShowTime = millis();
@@ -847,6 +890,11 @@ int32_t TraceRouteModule::runOnce()
     // Check for tracking timeout
     if (runState == TRACEROUTE_STATE_TRACKING && now - lastTraceRouteTime > trackingTimeoutMs) {
         LOG_INFO("TraceRoute timeout, no response received");
+        deliverTraceToChat(tracingNode, "no response yet (late replies accepted for 5 min)");
+        // Keep accepting a straggler response for a while: multi-hop replies regularly
+        // outlive the tracking window (see the revive block in alterReceivedProtobuf)
+        lateTraceNode = tracingNode;
+        lateTraceUntilMs = now + 5 * 60 * 1000UL;
         runState = TRACEROUTE_STATE_RESULT;
         setResultText("No response received");
         resultShowTime = now;

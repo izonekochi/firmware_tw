@@ -55,6 +55,9 @@ class Events
 #ifdef ARCH_ESP32
     int beforeLightSleep(void *unused); // Prepare for light sleep
 #endif
+#if defined(T_DECK_MAX)
+    int onScreenPower(bool awake); // T-Deck Max: screen awake (true) / settling-to-sleep (false)
+#endif
 
   private:
     // For convenience
@@ -78,6 +81,11 @@ class Events
 #ifdef ARCH_ESP32
     // Get notified when the system is entering light sleep
     CallbackObserver<Events, void *> lightSleepObserver = CallbackObserver<Events, void *>(this, &Events::beforeLightSleep);
+#endif
+
+#if defined(T_DECK_MAX)
+    // Get notified when the device screen wakes / settles to sleep (see Events::onScreenPower)
+    CallbackObserver<Events, bool> screenPowerObserver = CallbackObserver<Events, bool>(this, &Events::onScreenPower);
 #endif
 
     // End any externalNotification beeping, buzzing, blinking etc

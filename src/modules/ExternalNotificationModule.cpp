@@ -129,6 +129,7 @@ int32_t ExternalNotificationModule::runOnce()
 #ifdef HAS_DRV2605
             // Only trigger DRV2605 if vibration alerts are enabled
             if (moduleConfig.external_notification.alert_message_vibra || moduleConfig.external_notification.alert_bell_vibra) {
+                drv.setMode(DRV2605_MODE_INTTRIG); // clear STANDBY (parked at init, see main.cpp)
                 drv.go();
             }
 #endif
@@ -238,9 +239,11 @@ void ExternalNotificationModule::setExternalState(uint8_t index, bool on)
     }
 
     if (shouldTriggerDRV) {
+        drv.setMode(DRV2605_MODE_INTTRIG); // clear STANDBY (parked at init, see main.cpp)
         drv.go();
     } else if (!on && index == 1) {
         drv.stop();
+        drv.setMode(0x40 | DRV2605_MODE_INTTRIG); // burst over: back to ~2uA standby
     }
 #endif
 }
@@ -274,6 +277,7 @@ void ExternalNotificationModule::stopNow()
     setIntervalFromNow(0);
 #ifdef HAS_DRV2605
     drv.stop();
+    drv.setMode(0x40 | DRV2605_MODE_INTTRIG); // manual dismiss: back to ~2uA standby
 #endif
 
     // Prevent the state machine from immediately re-triggering outputs after a manual stop.
@@ -412,8 +416,14 @@ ProcessMessage ExternalNotificationModule::handleReceived(const meshtastic_MeshP
 
             // Alert GPIO Vibra when receiving a bell = alertBellVibra: true
             // Alert GPIO Vibra when receiving a message = alertMessageVibra: true
-            const bool vibraShouldAlert = (moduleConfig.external_notification.alert_bell_vibra && containsBell) ||
-                                          (moduleConfig.external_notification.alert_message_vibra && !is_muted);
+            bool vibraShouldAlert = (moduleConfig.external_notification.alert_bell_vibra && containsBell) ||
+                                    (moduleConfig.external_notification.alert_message_vibra && !is_muted);
+#if defined(T_DECK_MAX)
+            // Fork buzz policy (menu Hardware -> Vibration / alt+V chord): DMs-only silences
+            // channel broadcasts, Off silences everything. Bell alerts follow the same policy.
+            if (tdeckmaxVibraMode == 2 || (tdeckmaxVibraMode == 1 && !isDmToUs))
+                vibraShouldAlert = false;
+#endif
 
             // Alert GPIO Buzzer when receiving a bell = alertBellBuzzer: true
             // Alert GPIO Buzzer when receiving a message = alertMessageBuzzer: true
@@ -439,6 +449,8 @@ ProcessMessage ExternalNotificationModule::handleReceived(const meshtastic_MeshP
                 LOG_INFO("externalNotificationModule - Vibra alert");
 #ifdef HAS_DRV2605
                 // Set DRV2605 waveform when vibration alert is triggered
+                drv.setMode(DRV2605_MODE_INTTRIG); // clear STANDBY first (parked at init); the
+                                                   // waveform writes below give it ramp-up time
                 drv.setWaveform(0, 16); // Long buzzer 100%
                 drv.setWaveform(1, 0);  // Pause
                 drv.setWaveform(2, 16);

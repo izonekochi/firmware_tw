@@ -918,6 +918,10 @@ void setup()
     drv.selectLibrary(1);
     // I2C trigger by sending 'go' command
     drv.setMode(DRV2605_MODE_INTTRIG);
+    // Park the driver in STANDBY (MODE reg bit 6; trigger mode bits stay INTTRIG): active-idle
+    // burns 0.6-1mA quiescent 24/7 vs ~2uA parked. ExternalNotificationModule clears the bit
+    // before each vibration burst and re-parks on stop.
+    drv.setMode(0x40 | DRV2605_MODE_INTTRIG);
 #endif
 
     // Init our SPI controller (must be before screen and lora)

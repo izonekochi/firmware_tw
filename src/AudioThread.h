@@ -24,6 +24,10 @@ extern ExtensionIOXL9555 io;
 #include "platform/esp32/ExtensionIOMCP23017.h"
 #endif
 
+#ifdef T_DECK_MAX
+void tDeckMaxSetAudioAmp(bool enable);
+#endif
+
 #define AUDIO_THREAD_INTERVAL_MS 100
 
 class AudioThread : public concurrency::OSThread
@@ -35,6 +39,8 @@ class AudioThread : public concurrency::OSThread
     {
 #ifdef AUDIO_AMP_ENABLE
         AUDIO_AMP_ENABLE(true);
+#elif defined(T_DECK_MAX)
+        tDeckMaxSetAudioAmp(true);
 #endif
         setCPUFast(true);
         rtttlFile = std::unique_ptr<AudioFileSourcePROGMEM>(new AudioFileSourcePROGMEM(data, len));
@@ -63,6 +69,8 @@ class AudioThread : public concurrency::OSThread
         setCPUFast(false);
 #ifdef AUDIO_AMP_ENABLE
         AUDIO_AMP_ENABLE(false);
+#elif defined(T_DECK_MAX)
+        tDeckMaxSetAudioAmp(false);
 #endif
     }
 
@@ -75,12 +83,16 @@ class AudioThread : public concurrency::OSThread
 
 #ifdef AUDIO_AMP_ENABLE
         AUDIO_AMP_ENABLE(true);
+#elif defined(T_DECK_MAX)
+        tDeckMaxSetAudioAmp(true);
 #endif
         auto sam = std::unique_ptr<ESP8266SAM>(new ESP8266SAM);
         sam->Say(audioOut.get(), text);
         setCPUFast(false);
 #ifdef AUDIO_AMP_ENABLE
         AUDIO_AMP_ENABLE(false);
+#elif defined(T_DECK_MAX)
+        tDeckMaxSetAudioAmp(false);
 #endif
     }
 

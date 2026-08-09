@@ -29,7 +29,7 @@ class Persistence
 
     // Used to invalidate old settings, if needed
     // Version 0 is reserved for testing, and will always load defaults
-    static constexpr uint32_t SETTINGS_VERSION = 3;
+    static constexpr uint32_t SETTINGS_VERSION = 6; // bumped: added optionalFeatures per-category label toggles (showPlaceLabels/showHospitals/showShelters/showEmergencyServices)
 
     struct Settings {
         struct Meta {
@@ -70,6 +70,13 @@ class Persistence
         struct OptionalFeatures {
             bool notifications = true;
             bool batteryIcon = false;
+            bool showNodeMarkers = true;      // NavMap: plot every node with a known position
+            bool autoJumpToMsgSender = false; // NavMap: recenter on a message's sender when one arrives
+            bool showMapLabels = true;        // NavMap: master switch for the whole label overlay
+            bool showPlaceLabels = true;      // NavMap: place / district / POI name text (gated under showMapLabels)
+            bool showHospitals = true;        // NavMap: hospital / clinic icons
+            bool showShelters = true;         // NavMap: air-raid / evacuation shelter icons
+            bool showEmergencyServices = false; // NavMap: police / fire-station icons
         } optionalFeatures;
 
         // Some menu items may not be required, based on device / configuration

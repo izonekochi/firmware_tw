@@ -140,7 +140,11 @@ void InkHUD::NotificationApplet::onForeground()
 void InkHUD::NotificationApplet::onBackground()
 {
     handleInput = false;
-    inkhud->forceUpdate(EInk::UpdateTypes::FULL, true);
+    // Dismissing the notification banner redraws every applet to clear the overlay. Upstream hard-forces FULL here,
+    // which means a full-screen flash on essentially every incoming message (autoshow dismisses the banner). Hand the
+    // choice to DisplayHealth instead: it resolves UNSPECIFIED to FAST until enough fast-refresh "debt" accrues, then
+    // spends one FULL to clear ghosting -- so most messages redraw with a quick FAST and full refreshes stay periodic.
+    inkhud->forceUpdate(EInk::UpdateTypes::UNSPECIFIED, true);
 }
 
 void InkHUD::NotificationApplet::onButtonShortPress()

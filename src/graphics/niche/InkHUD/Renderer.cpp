@@ -146,6 +146,23 @@ uint16_t InkHUD::Renderer::height()
 // - queuing another render: while one is already is progress
 int32_t InkHUD::Renderer::runOnce()
 {
+#if defined(T_DECK_MAX)
+    // Sleep render gating: while the screen is asleep (moon shown), REQUESTED updates are
+    // deferred - the wake repaint (forceUpdate, all=true, from Events::onScreenPower) redraws
+    // everything anyway, so mid-nap renders (SystemInfo's periodic tick, packet-driven applet
+    // requests from the threaded/Heard applets) were pure e-ink wear plus ~1s of extra awake
+    // time per wake window (Events::beforeLightSleep waits out any in-flight refresh).
+    // At most one deferred update is released per TDECKMAX_SLEEP_RENDER_INTERVAL_MS (default
+    // 10 min) so a glance at the sleeping device still shows a reasonably fresh info panel.
+    // FORCED updates bypass the gate entirely: the sleep-entry moon stamp is a synchronous
+    // forceUpdate (never reaches here) and the wake repaint arrives with `forced` set.
+    if (requested && !forced && !inkhudScreenAwake) {
+        const uint32_t sinceLast = millis() - lastSleepRenderMs;
+        if (sinceLast < TDECKMAX_SLEEP_RENDER_INTERVAL_MS)
+            return TDECKMAX_SLEEP_RENDER_INTERVAL_MS - sinceLast; // re-checked at the next wake window
+    }
+#endif
+
     // If an applet asked to render, and hardware is able, lets try now
     if (requested && !driver->busy()) {
         render();
@@ -237,6 +254,13 @@ void InkHUD::Renderer::render(bool async)
         // Tell display to begin process of drawing new image
         LOG_INFO("Updating display");
         driver->update(imageBuffer, updateType);
+
+#if defined(T_DECK_MAX)
+        // (Re)start the asleep refresh window (see runOnce sleep gating). Covers the sleep-entry
+        // moon stamp too: inkhudScreenAwake is cleared before that synchronous forceUpdate runs.
+        if (!inkhudScreenAwake)
+            lastSleepRenderMs = millis();
+#endif
 
         // If not async, wait here until the update is complete
         if (!async)
@@ -464,6 +488,9 @@ void InkHUD::Renderer::renderSystemApplets()
             continue;
 
         assert(sa->getTile());
+
+        // Let the applet adjust its tile geometry before the clear (see SystemApplet::preRender)
+        sa->preRender();
 
         // Clear the tile unless the applet wants to draw over its previous render
         // or everything is getting re-rendered anyways

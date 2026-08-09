@@ -45,6 +45,10 @@ class PositionModule : public ProtobufModule<meshtastic_Position>, private concu
     // Effective min interval: stationary positions are held to stationaryFloorMs (when that is the
     // longer of the two); otherwise the normal configured interval.
     static uint32_t effectiveBroadcastIntervalMs(uint32_t configuredIntervalMs, bool stationary, uint32_t stationaryFloorMs);
+    // Age of the last GPS-accepted local fix IF it exceeds the stale limit (max(3x
+    // gps_update_interval, 6h), same as MeshService::onGPSChanged()'s bound), else 0.
+    // Non-zero means sendOurPosition() will refuse to re-broadcast it.
+    static uint32_t staleLocalFixAgeSecs();
 
   protected:
     /** Called to handle a particular incoming message

@@ -31,15 +31,33 @@ enum MenuAction {
     SET_SMART_BROADCAST_INTERVAL,
     SET_SMART_BROADCAST_DISTANCE,
     SET_GPS_UPDATE_INTERVAL,
+    TOGGLE_DEVICE_TELEMETRY,       // device_telemetry_enabled: checked live per cycle, no reboot
+    TOGGLE_POWER_TELEMETRY,        // power_measurement_enabled: module constructed at boot -> reboots
+    SET_DEVICE_TELEMETRY_INTERVAL, // device_update_interval picker (live)
+    SET_POWER_TELEMETRY_INTERVAL,  // power_update_interval picker (live)
+    SET_NODEINFO_INTERVAL,         // node_info_broadcast_secs picker (live, next module cycle)
+    TOGGLE_TDM_DEBUG_HOLD,         // T-Deck Max: stay-awake + fast Info refresh (session-only)
+    TOGGLE_TDM_SILENT,             // T-Deck Max: silent mode - no asleep e-ink refresh (persisted)
+    DMCHAT_TRACEROUTE,             // DM chat: stage the bound peer for traceroute (channel picker follows)
+    HEARD_TRACEROUTE,              // Heard: stage the highlighted node for traceroute (channel picker follows)
+    TRACEROUTE_GO,                 // TRACEROUTE_VIA page: fire the trace on the selected channel
     ENABLE_BLUETOOTH,
     TOGGLE_APPLET,
     TOGGLE_AUTOSHOW_APPLET,
     SET_RECENTS,
     ROTATE,
+    TOGGLE_JOYSTICK,
     ALIGN_JOYSTICK,
     LAYOUT,
     TOGGLE_BATTERY_ICON,
     TOGGLE_NOTIFICATIONS,
+    TOGGLE_NODE_MARKERS,     // NavMap: show/hide node markers
+    TOGGLE_AUTO_JUMP_MSG,    // NavMap: recenter on a message's sender
+    TOGGLE_MAP_LABELS,       // NavMap: master switch for the label overlay
+    TOGGLE_PLACE_LABELS,     // NavMap: place / district name labels
+    TOGGLE_HOSPITALS,        // NavMap: hospital / medical icons
+    TOGGLE_SHELTERS,         // NavMap: shelter icons
+    TOGGLE_EMERGENCY_SVC,    // NavMap: police / fire icons
     TOGGLE_INVERT_COLOR,
     TOGGLE_12H_CLOCK,
     // Regions
@@ -141,6 +159,23 @@ enum MenuAction {
     MAP_ZOOM_IN,
     MAP_ZOOM_OUT,
     MAP_ZOOM_RESET,
+    MAP_GPS_LOCATE,   // NavMap: force a fresh GPS fix and recenter on it - MAP-ONLY, never broadcast
+    MAP_GPS_TRACE,    // NavMap: toggle continuous private follow mode (recenter on every fix)
+    MAP_SET_POSITION, // NavMap: publish the current map centre as the node's official position
+    DMCHAT_CLOSE,   // DMChat: unbind the displayed chat window, returning its slot to the pool
+    UNICHAT_PICK,   // Chats: reopen the in-applet channel/DM target list
+    UNICHAT_CLEAR,  // Chats: delete every stored message of the open target
+    HEARD_TOGGLE_FAVORITE, // Heard: favorite/unfavorite the highlighted node (pins it to the top)
+    HEARD_SELECT_MODE,     // Heard: enter node-select mode (highlight on the top visible card)
+    MENU_OPEN_INPUT,       // Open the IME driving the applet under the menu (Search Node / Search Place / Reply...)
+    CYCLE_VIBRA,           // T-Deck Max: vibration policy All -> DMs only -> Off
+    // T-Deck Max hardware toggles (persisted via TDeckMaxPrefs; execute cases gated to T_DECK_MAX)
+    TOGGLE_ANTENNA,    // LoRa antenna internal/external (XL9555 P04)
+    CYCLE_FRONTLIGHT,  // E-ink frontlight level 0/64/128/255 (GPIO41 PWM)
+    TOGGLE_TOUCH,      // Touchscreen coordinate/gesture enable (default OFF)
+    TOGGLE_QUICK_SLEEP, // Idle -> immediate light sleep (default ON)
+    TOGGLE_CPU_FREQ,    // 80MHz (default) <-> 240MHz race-to-sleep experiment
+    TOGGLE_RX_SNIFF,    // SX126x RX duty-cycle sniff depth: 8 symbols (default) <-> 4 (eco)
 };
 
 } // namespace NicheGraphics::InkHUD

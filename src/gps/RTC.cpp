@@ -294,6 +294,19 @@ RTCSetResult perhapsSetRTC(RTCQuality q, const struct timeval *tv, bool forceUpd
         // Every 30 minutes we will slam in a new NTP or Phone GPS / NTP time, to correct for local RTC clock drift
         shouldSet = true;
         LOG_DEBUG("Reapply external time to correct clock drift %ld secs", printableEpoch);
+    } else if (q == RTCQualityFromNet && !Throttle::isWithinTimespanMs(lastSetMsec, (2 * 60 * 60 * 1000UL))) {
+        // Fork: accept mesh time as a periodic drift correction once our own clock is 2h stale.
+        // Light-sleep-heavy builds (T-Deck Max naps ~95% of wall time) lose several percent of
+        // wall time to the ESP32-S3's RC-slow-clock sleep timekeeping (field: -1.5h over 14h),
+        // and without this clause a single phone sync (NTP quality) blocked mesh corrections
+        // forever - quality never decays. Authoritative sources stay in charge: an active GPS
+        // re-applies constantly and a connected phone re-slams every 30min, both keeping
+        // lastSetMsec fresh so this clause never fires while they are alive. The senders are
+        // pre-filtered by PositionModule::trySetRtc (primary channel, GPS-grade position fix)
+        // Demoting currentQuality to FromNet here
+        // is honest: mesh time is what the clock now holds.
+        shouldSet = true;
+        LOG_INFO("Mesh time accepted as drift correction (last set %lus ago)", (unsigned long)((now - lastSetMsec) / 1000));
     } else {
         shouldSet = false;
         LOG_DEBUG("Current RTC quality: %s. Ignore time of RTC quality of %s", RtcName(currentQuality), RtcName(q));

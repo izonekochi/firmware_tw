@@ -109,6 +109,11 @@ extern meshtastic_LocalModuleConfig moduleConfig;
 extern meshtastic_User &owner;
 extern meshtastic_Position localPosition;
 
+// Map-only GPS session (InkHUD NavMap private locate/trace): while true, PositionModule sends
+// NO position broadcasts. The applet snapshots localPosition at session start and restores it
+// at session end, so fixes acquired during the session are never visible to the mesh.
+extern bool localPositionBroadcastHold;
+
 static constexpr const char *deviceStateFileName = "/prefs/device.proto";
 static constexpr const char *legacyPrefFileName = "/prefs/db.proto";
 static constexpr const char *nodeDatabaseFileName = "/prefs/nodes.proto";

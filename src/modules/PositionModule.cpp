@@ -152,7 +152,11 @@ bool PositionModule::hasQualityTimesource()
 #if MESHTASTIC_EXCLUDE_GPS
     bool hasGpsOrRtc = (rtc_found.address != ScanI2C::ADDRESS_NONE.address);
 #else
-    bool hasGpsOrRtc = hasGPS() || (rtc_found.address != ScanI2C::ADDRESS_NONE.address);
+    // Count the GPS only while it is actually enabled: a rail-cut / user-disabled module
+    // (T-Deck Max alt+G keeps GPS off for weeks) cannot supply time, but its mere presence
+    // used to satisfy this check and permanently blocked mesh-time drift correction.
+    bool hasGpsOrRtc = (hasGPS() && config.position.gps_mode == meshtastic_Config_PositionConfig_GpsMode_ENABLED) ||
+                       (rtc_found.address != ScanI2C::ADDRESS_NONE.address);
 #endif
     return hasGpsOrRtc || setFromPhoneOrNtpToday;
 }
@@ -281,6 +285,18 @@ meshtastic_MeshPacket *PositionModule::allocReply()
         return nullptr;
     }
 
+    // The stale gate applies to request replies too: allocPositionPacket() re-stamps p.time to
+    // "now", so answering a position request from a dead GPS would hand out hours-old
+    // coordinates presented as current - the exact lie the send path refuses - and the node
+    // would look position-silent on broadcast yet "healthy" on demand. Returning nullptr
+    // (without ignoreRequest) lets the framework answer with an honest NO_RESPONSE nak.
+    const uint32_t staleAgeSecs = staleLocalFixAgeSecs();
+    if (staleAgeSecs) {
+        LOG_WARN("Last GPS fix is %umin old - refusing position request so a dead GPS is visible",
+                 (unsigned)(staleAgeSecs / 60));
+        return nullptr;
+    }
+
     meshtastic_MeshPacket *reply = allocPositionPacket();
     if (reply) {
         lastSentReply = millis(); // Track when we sent this reply
@@ -382,10 +398,44 @@ void PositionModule::sendOurPosition()
     }
 }
 
+// The send-path twin of the stale bound in MeshService::onGPSChanged(). That bound only runs when
+// the GPS publishes, and a GPS that stops acquiring publishes exactly once (the loss-of-lock edge)
+// - structurally before the limit - and then never again, so it alone cannot stop this module's
+// own timer from re-broadcasting the preserved fix, re-stamped as current, forever. This is how
+// a dead GPS stayed invisible on the mesh for 15h. Gate the send path itself instead: it runs
+// on every broadcast attempt regardless of what the GPS thread does, including none at all.
+uint32_t PositionModule::staleLocalFixAgeSecs()
+{
+    if (config.position.fixed_position || localPosition.time == 0)
+        return 0; // a fixed position never goes stale; no fix time means nothing to judge
+    // Only our own GPS's fixes can go stale in the sense this gate exists for. A phone-fed
+    // position (location_source EXTERNAL/unset) has no on-node refresh path at all - the node
+    // never moved, the position is still true, and withholding it 6h after the phone last
+    // synced would silence a healthy GPS-less node forever.
+    if (localPosition.location_source != meshtastic_Position_LocSource_LOC_INTERNAL)
+        return 0;
+    const uint32_t nowSecs = getValidTime(RTCQualityFromNet);
+    if (nowSecs == 0 || nowSecs <= localPosition.time)
+        return 0; // no trustworthy clock: cannot prove staleness, keep broadcasting
+    uint32_t staleLimitSecs =
+        3 * (Default::getConfiguredOrDefaultMs(config.position.gps_update_interval, default_gps_update_interval) / 1000);
+    if (staleLimitSecs < 6 * 60 * 60)
+        staleLimitSecs = 6 * 60 * 60;
+    const uint32_t ageSecs = nowSecs - localPosition.time;
+    return (ageSecs > staleLimitSecs) ? ageSecs : 0;
+}
+
 void PositionModule::sendOurPosition(NodeNum dest, bool wantReplies, uint8_t channel)
 {
     if (!config.position.fixed_position && !nodeDB->hasLocalPositionSinceBoot()) {
         LOG_DEBUG("Skip position send; no fresh position since boot");
+        return;
+    }
+
+    const uint32_t staleAgeSecs = staleLocalFixAgeSecs();
+    if (staleAgeSecs) {
+        LOG_WARN("Last GPS fix is %umin old - withholding broadcast so a dead GPS is visible on the mesh",
+                 (unsigned)(staleAgeSecs / 60));
         return;
     }
 
@@ -485,6 +535,13 @@ int32_t PositionModule::runOnce()
     if (node == nullptr)
         return RUNONCE_INTERVAL;
 
+    // Map-only GPS session in progress (NavMap private locate/trace, see NodeDB.h): send
+    // nothing. The applet restores the pre-session localPosition before clearing the hold, so
+    // nothing acquired during the session ever reaches the mesh - not even via the periodic or
+    // smart-broadcast paths below. Timers are left un-burned; normal cadence resumes on clear.
+    if (localPositionBroadcastHold)
+        return RUNONCE_INTERVAL;
+
     // We limit our GPS broadcasts to a max rate
     uint32_t now = millis();
     uint32_t intervalMs = Default::getConfiguredOrDefaultMsScaled(
@@ -519,7 +576,14 @@ int32_t PositionModule::runOnce()
 #ifdef GPS_DEBUG
             LOG_DEBUG("Skip initial position send; no fresh position since boot");
 #endif
-        } else if (nodeDB->hasValidPosition(node)) {
+        } else if (nodeDB->hasValidPosition(node) && !staleLocalFixAgeSecs()) {
+            // The stale pre-check keeps a withheld send from burning lastGpsSend and the
+            // transmit-history stamp (other senders were built the same way): burned, a GPS
+            // that recovers would then wait out ANOTHER full interval - the 12h stationary
+            // floor on a relay - before its first visible broadcast. Unburned, the long-expired
+            // window fires on the next tick after recovery. Silent by design: sendOurPosition()
+            // is never reached from here while stale, and the GPS thread already WARNs per
+            // fixless window.
             lastGpsSend = now;
 
             meshtastic_PositionLite selfPos;

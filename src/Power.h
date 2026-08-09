@@ -147,3 +147,23 @@ class Power : public concurrency::OSThread
 void battery_adcEnable();
 
 extern Power *power;
+
+#if defined(HAS_BQ27220)
+// BQ27220 fuel-gauge time predictions for UI use (InkHUD SystemInfo applet). Minutes; the TI
+// convention is 65535 when not applicable (TimeToFull while not charging / TimeToEmpty while not
+// discharging). Returns false when the gauge is absent or failed init. The gauge coulomb-counts
+// continuously - including through light sleep - so TimeToEmpty reflects the true duty-cycled
+// average draw, available seconds after boot (no warm-up window).
+bool bq27220GetGaugeTimes(uint16_t &toFullMin, uint16_t &toEmptyMin);
+
+// Live coulomb-counter readings: signed battery current in mA (negative = discharging) and
+// RemainingCapacity in mAh. On battery, delta-mAh over elapsed time is the true average system
+// consumption INCLUDING light sleep (the gauge integrates autonomously on battery power). While
+// USB/Qi power is present the battery current is the CHARGE current, not system consumption.
+bool bq27220GetGaugeLive(int16_t &currentMa, uint16_t &remainingMah);
+
+// Battery-rail pair for power telemetry (PowerTelemetryModule ch1): terminal voltage in mV and
+// the same signed coulomb-counter current as bq27220GetGaugeLive. Two I2C word reads.
+bool bq27220GetGaugePower(uint16_t &voltageMv, int16_t &currentMa);
+#endif
+

@@ -13,6 +13,9 @@ namespace NicheGraphics::InkHUD {
             ThreadedMessage,
             Heard,
             RecentList,
+            NavMap,
+            DMChat,
+            UniChat,
         };
         virtual ~Controllable() = default;
         virtual bool handleUp();

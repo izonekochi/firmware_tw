@@ -56,7 +56,20 @@ class NodeListApplet : public Applet, public MeshModule
     virtual void handleParsed(CardInfo c) = 0; // Tell derived applet that we heard a node
     virtual std::string getHeaderText() = 0;   // Ask derived class what the applet's title should be
 
+#if defined(MOD_INPUT_MENU)
+    // Index (into `cards`) of the card to draw with a selection border, or -1 for none.
+    // Overridden by HeardApplet's node-selection mode (Enter to select, Enter again to chat).
+    virtual int16_t highlightedCard() { return -1; }
+#endif // defined(MOD_INPUT_MENU)
+
     uint8_t maxCards(); // Max number of cards which could ever fit on screen
+
+#if defined(MOD_INPUT_MENU)
+    // How many cards fully fit in THIS applet's current tile. maxCards() sizes the card BUFFER
+    // from the largest display dimension; the drawn count depends on the live tile height (e.g.
+    // the 2-tile split), so selection cursors must bound themselves with this instead.
+    uint8_t visibleCards();
+#endif // defined(MOD_INPUT_MENU)
 
     std::deque<CardInfo> cards; // Cards to be rendered. Derived applet fills this.
 

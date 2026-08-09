@@ -19,6 +19,7 @@ enum MenuPage : uint8_t {
     ROOT, // Initial menu page
     SEND,
     CANNEDMESSAGE_RECIPIENT, // Select destination for a canned message
+    TRACEROUTE_VIA,          // Pick which channel carries a traceroute request
     OPTIONS,
     NODE_CONFIG,
     NODE_CONFIG_LORA,
@@ -28,6 +29,7 @@ enum MenuPage : uint8_t {
     NODE_CONFIG_PRESET,
     NODE_CONFIG_DEVICE,
     NODE_CONFIG_DEVICE_ROLE,
+    NODE_CONFIG_DEVICE_NODEINFO_INTERVAL,
     NODE_CONFIG_POWER,
     NODE_CONFIG_POWER_ADC_CAL,
     NODE_CONFIG_NETWORK,
@@ -39,14 +41,19 @@ enum MenuPage : uint8_t {
     NODE_CONFIG_POSITION_SMART_INTERVAL,
     NODE_CONFIG_POSITION_SMART_DISTANCE,
     NODE_CONFIG_POSITION_GPS_UPDATE_INTERVAL,
+    NODE_CONFIG_TELEMETRY,
+    NODE_CONFIG_TELEMETRY_DEVICE_INTERVAL,
+    NODE_CONFIG_TELEMETRY_POWER_INTERVAL,
     NODE_CONFIG_ADMIN_RESET,
     NODE_CONFIG_ADMIN_MESSAGES,
     TIMEZONE,
     APPLETS,
     AUTOSHOW,
-    RECENTS, // Select length of "recentlyActiveSeconds"
+    RECENTS,     // Select length of "recentlyActiveSeconds"
+    MAP_OPTIONS, // NavMap display toggles (markers / labels / POI icons), grouped off Options
     REGION,
-    EXIT, // Dismiss the menu applet
+    TDECKMAX_HW, // T-Deck Max hardware toggles (antenna / frontlight / touch); populated only under T_DECK_MAX
+    EXIT,        // Dismiss the menu applet
 };
 
 } // namespace NicheGraphics::InkHUD

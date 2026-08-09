@@ -16,6 +16,8 @@
 #include "./Applets/System/Notification/TouchStatusApplet.h"
 #include "./Applets/System/Pairing/PairingApplet.h"
 #include "./Applets/System/Placeholder/PlaceholderApplet.h"
+#if defined(T_DECK_MAX)
+#endif
 #include "./Applets/System/Tips/TipsApplet.h"
 #include "./SystemApplet.h"
 
@@ -43,6 +45,16 @@ InkHUD::WindowManager::WindowManager()
 // Call before begin
 void InkHUD::WindowManager::addApplet(const char *name, Applet *a, bool defaultActive, bool defaultAutoshow, uint8_t onTile)
 {
+    // Hard cap: the persisted settings arrays (active/autoshow) hold MAX_USERAPPLETS_GLOBAL
+    // entries, and EVERY consumer indexes them by position in userApplets - one applet past the
+    // cap means out-of-bounds writes below and OOB reads in autoshow()/menu/cycling forever
+    // after (observed live: 8 always-true channel conditions pushed "Info" to index 16).
+    if (inkhud->userApplets.size() >= Persistence::MAX_USERAPPLETS_GLOBAL) {
+        LOG_ERROR("addApplet: cap %u reached; dropping applet \"%s\"", (unsigned)Persistence::MAX_USERAPPLETS_GLOBAL, name);
+        delete a;
+        return;
+    }
+
     inkhud->userApplets.push_back(a);
 
     // If requested, mark in settings that this applet should be active by default
@@ -88,6 +100,12 @@ void InkHUD::WindowManager::begin()
 // and the one where the menu will be displayed
 void InkHUD::WindowManager::nextTile()
 {
+    // Ignore tile-switching during a transient menu split: the two tiles are the map + the open menu, so switching
+    // focus (or the InputMenu-background below, which would prematurely merge the split) mid coordinate-entry is
+    // meaningless and disruptive. The user's real layout is 1 tile; nav keys fall through to applet cycling instead.
+    if (menuSplitActive)
+        return;
+
     // Close the menu applet if open
     // We don't *really* want to do this, but it simplifies handling *a lot*
     MenuApplet *menu = (MenuApplet *)inkhud->getSystemApplet("Menu");
@@ -121,9 +139,10 @@ void InkHUD::WindowManager::nextTile()
             InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
             inputMenu->show(userTiles.at(settings->userTiles.focused), nullptr);
         }
-        else if (settings->userTiles.count == 2 && Controllable::checkControllable(userTiles.at(1 - settings->userTiles.focused)->getAssignedApplet()) != Controllable::Types::Uncontrollable) {
+        // 2-tile: menu on the non-focused tile, driving the focused (working) applet -> keep it visible.
+        else if (settings->userTiles.count == 2 && Controllable::checkControllable(userTiles.at(settings->userTiles.focused)->getAssignedApplet()) != Controllable::Types::Uncontrollable) {
             InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
-            inputMenu->show(userTiles.at(settings->userTiles.focused), userTiles.at(1 - settings->userTiles.focused));
+            inputMenu->show(userTiles.at(1 - settings->userTiles.focused), userTiles.at(settings->userTiles.focused));
         }
     }
 #endif //defined(MOD_INPUT_MENU)
@@ -139,6 +158,10 @@ void InkHUD::WindowManager::nextTile()
 // Focus on a different tile but decrement index
 void InkHUD::WindowManager::prevTile()
 {
+    // See nextTile(): tile-switching is a no-op during a transient menu split.
+    if (menuSplitActive)
+        return;
+
     // Close the menu applet if open
     // We don't *really* want to do this, but it simplifies handling *a lot*
     MenuApplet *menu = (MenuApplet *)inkhud->getSystemApplet("Menu");
@@ -175,9 +198,10 @@ void InkHUD::WindowManager::prevTile()
             InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
             inputMenu->show(userTiles.at(settings->userTiles.focused), nullptr);
         }
-        else if (settings->userTiles.count == 2 && Controllable::checkControllable(userTiles.at(1 - settings->userTiles.focused)->getAssignedApplet()) != Controllable::Types::Uncontrollable) {
+        // 2-tile: menu on the non-focused tile, driving the focused (working) applet -> keep it visible.
+        else if (settings->userTiles.count == 2 && Controllable::checkControllable(userTiles.at(settings->userTiles.focused)->getAssignedApplet()) != Controllable::Types::Uncontrollable) {
             InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
-            inputMenu->show(userTiles.at(settings->userTiles.focused), userTiles.at(1 - settings->userTiles.focused));
+            inputMenu->show(userTiles.at(1 - settings->userTiles.focused), userTiles.at(settings->userTiles.focused));
         }
     }
 #endif //defined(MOD_INPUT_MENU)
@@ -226,24 +250,42 @@ bool InkHUD::WindowManager::selectTileAt(uint16_t x, uint16_t y)
 // The applet previously displayed there will be restored once the menu closes
 void InkHUD::WindowManager::openMenu()
 {
-#if defined(MOD_INPUT_MENU)
-    if (settings->userTiles.count == 1 && Controllable::checkControllable(userTiles.at(settings->userTiles.focused)->getAssignedApplet()) != Controllable::Types::Uncontrollable) {
-        InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
-        inputMenu->show(userTiles.at(settings->userTiles.focused), nullptr);
-    }
-    else if (settings->userTiles.count == 2 && Controllable::checkControllable(userTiles.at(1 - settings->userTiles.focused)->getAssignedApplet()) != Controllable::Types::Uncontrollable) {
-        InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
-        inputMenu->show(userTiles.at(settings->userTiles.focused), userTiles.at(1 - settings->userTiles.focused));
-    }
-    else {
-        MenuApplet *menu = (MenuApplet *)inkhud->getSystemApplet("Menu");
-        menu->show(userTiles.at(settings->userTiles.focused));
-    }
-#else //!defined(MOD_INPUT_MENU)
+    // ALWAYS the factory settings menu (user decision 2026-08-07): chat-style applets open the
+    // IME directly via Enter (InputMenuApplet::handleBackgroundTKey) and every applet can reach
+    // the IME through the menu's typed-input item ("Search Node" / "Search Place" / "Reply"...),
+    // so the old auto-routing of Controllable applets to the IME is gone.
     MenuApplet *menu = (MenuApplet *)inkhud->getSystemApplet("Menu");
     menu->show(userTiles.at(settings->userTiles.focused));
-#endif //defined(MOD_INPUT_MENU)
 }
+
+#if defined(MOD_INPUT_MENU)
+// Open the IME (InputMenuApplet), driving the FOCUSED applet. 1-tile layouts get the transient
+// split so the working applet (e.g. NavMap during a place search) stays visible beside the IME;
+// 2-tile layouts render the IME on the non-focused tile. Falls back to the settings menu if the
+// focused applet is not controllable.
+void InkHUD::WindowManager::openInputMenu()
+{
+    if (settings->userTiles.count == 1 && Controllable::checkControllable(userTiles.at(settings->userTiles.focused)->getAssignedApplet()) != Controllable::Types::Uncontrollable) {
+        // Transient split: temporarily become 2-tile so the working applet stays visible beside the
+        // IME instead of being masked, then merge back when it closes (InputMenuApplet::onBackground ->
+        // restoreFromMenuSplit). Runtime-only, mirroring keyboardOpen. changeLayout() rebuilds to 2 tiles.
+        savedUserTileCount = settings->userTiles.count; // 1
+        menuSplitActive = true;
+        settings->userTiles.count = 2;
+        changeLayout();
+        InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
+        inputMenu->show(userTiles.at(1 - settings->userTiles.focused), userTiles.at(settings->userTiles.focused));
+    }
+    // 2-tile: drive the FOCUSED (working) applet but render the IME on the OTHER tile
+    else if (settings->userTiles.count == 2 && Controllable::checkControllable(userTiles.at(settings->userTiles.focused)->getAssignedApplet()) != Controllable::Types::Uncontrollable) {
+        InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
+        inputMenu->show(userTiles.at(1 - settings->userTiles.focused), userTiles.at(settings->userTiles.focused));
+    }
+    else {
+        openMenu();
+    }
+}
+#endif //defined(MOD_INPUT_MENU)
 
 // Show touch-only app switcher on the focused tile
 void InkHUD::WindowManager::openAppSwitcher()
@@ -459,11 +501,17 @@ void InkHUD::WindowManager::toggleBatteryIcon()
 
     settings->optionalFeatures.batteryIcon = !settings->optionalFeatures.batteryIcon; // Preserve the change between boots
 
+#if defined(T_DECK_MAX)
+    // Sleep-UX: the applet stays foreground regardless of the setting, so it can stamp the
+    // "asleep" moon into its tile; the battery glyph itself is gated inside onRender.
+    (void)batteryIcon;
+#else
     // Show or hide the applet
     if (settings->optionalFeatures.batteryIcon)
         batteryIcon->bringToForeground();
     else
         batteryIcon->sendToBackground();
+#endif
 
     // Force-render
     inkhud->forceUpdate(EInk::UpdateTypes::FAST);
@@ -473,6 +521,21 @@ void InkHUD::WindowManager::toggleBatteryIcon()
 // Call after changing settings.tiles.count
 void InkHUD::WindowManager::changeLayout()
 {
+#if defined(MOD_INPUT_MENU)
+    // Close the InputMenu BEFORE the tiles are destroyed. Its onBackground() writes through its assignedTile to
+    // restore the borrowed applet; createUserTiles() below frees that tile, so backgrounding it afterwards (as the
+    // else branch used to) is a use-after-free write on the nRF52 heap -- reachable from the '1-2' tile-count key
+    // while the menu is foreground. Re-show it against the NEW tiles after refocusTile() if still applicable.
+    bool inputMenuWasOpen = false;
+    {
+        InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
+        if (inputMenu->isForeground()) {
+            inputMenu->sendToBackground(); // tile still alive here -> the borrowed-applet restore is safe
+            inputMenuWasOpen = true;
+        }
+    }
+#endif //defined(MOD_INPUT_MENU)
+
     // Recreate tiles
     // - correct number created, from settings.userTiles.count
     // - set dimension and position of tiles, according to layout
@@ -504,20 +567,16 @@ void InkHUD::WindowManager::changeLayout()
         menu->show(ft);
     }
 #if defined(MOD_INPUT_MENU)
-    else {
+    // Re-show the InputMenu against the NEW tiles if it was open and the focused applet is still controllable.
+    // It was already backgrounded (safely) at the top; if neither re-show condition holds it simply stays closed.
+    else if (inputMenuWasOpen) {
         InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
-        if (inputMenu->isForeground()) {
-            if (settings->userTiles.count == 1 && Controllable::checkControllable(userTiles.at(settings->userTiles.focused)->getAssignedApplet()) != Controllable::Types::Uncontrollable) {
-                InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
-                inputMenu->show(userTiles.at(settings->userTiles.focused), nullptr);
-            }
-            else if (settings->userTiles.count == 2 && Controllable::checkControllable(userTiles.at(1 - settings->userTiles.focused)->getAssignedApplet()) != Controllable::Types::Uncontrollable) {
-                InputMenuApplet *inputMenu = (InputMenuApplet *)inkhud->getSystemApplet("InputMenu");
-                inputMenu->show(userTiles.at(settings->userTiles.focused), userTiles.at(1 - settings->userTiles.focused));
-            }
-            else {
-                inputMenu->sendToBackground();
-            }
+        if (settings->userTiles.count == 1 && Controllable::checkControllable(userTiles.at(settings->userTiles.focused)->getAssignedApplet()) != Controllable::Types::Uncontrollable) {
+            inputMenu->show(userTiles.at(settings->userTiles.focused), nullptr);
+        }
+        // 2-tile: menu on the non-focused tile, driving the focused (working) applet -> keep it visible.
+        else if (settings->userTiles.count == 2 && Controllable::checkControllable(userTiles.at(settings->userTiles.focused)->getAssignedApplet()) != Controllable::Types::Uncontrollable) {
+            inputMenu->show(userTiles.at(1 - settings->userTiles.focused), userTiles.at(settings->userTiles.focused));
         }
     }
 #endif //defined(MOD_INPUT_MENU)
@@ -541,6 +600,18 @@ void InkHUD::WindowManager::changeLayout()
     // Force-render
     // - redraw all applets
     inkhud->forceUpdate(EInk::UpdateTypes::FAST, true);
+}
+
+// Merge the transient InputMenu 1->2 split back to the user's real tile count once the menu closes.
+// Called from InputMenuApplet::onBackground -- at that point the menu's foreground flag is already false, so the
+// changeLayout() below won't try to background/re-show it (no bounce). Idempotent: a no-op unless a split is active.
+void InkHUD::WindowManager::restoreFromMenuSplit()
+{
+    if (!menuSplitActive)
+        return;
+    menuSplitActive = false;
+    settings->userTiles.count = savedUserTileCount;
+    changeLayout();
 }
 
 // Perform necessary reconfiguration when user activates or deactivates applets at run-time
@@ -592,24 +663,33 @@ void InkHUD::WindowManager::autoshow()
 
     NotificationApplet *notificationApplet = (NotificationApplet *)inkhud->getSystemApplet("Notification");
 
-    for (uint8_t i = 0; i < inkhud->userApplets.size(); i++) {
-        Applet *a = inkhud->userApplets.at(i);
-        if (a->wantsToAutoshow()                  // Applet wants to become foreground
-            && !a->isForeground()                 // Not yet foreground
-            && settings->userApplets.autoshow[i]) // User permits this applet to autoshow
-        {
-            Tile *t = userTiles.at(settings->userTiles.focused); // Get focused tile
-            t->getAssignedApplet()->sendToBackground();          // Background whichever applet is already on the tile
-            t->assignApplet(a);                                  // Assign our new applet to tile
-            a->bringToForeground();                              // Foreground our new applet
+    // Two passes: a DM chat window (DMChatApplet) wanting to show an incoming message outranks
+    // the usual add-order priority, so "All Messages" / "DMs" can't consume the single autoshow
+    // slot before the dedicated chat gets its chance. Pass 1: chat windows only; pass 2: everyone.
+    for (uint8_t pass = 0; pass < 2; pass++) {
+        for (uint8_t i = 0; i < inkhud->userApplets.size(); i++) {
+            Applet *a = inkhud->userApplets.at(i);
+            if (pass == 0 && !a->asDMChatApplet())
+                continue;
+            if (a->wantsToAutoshow()                  // Applet wants to become foreground
+                && !a->isForeground()                 // Not yet foreground
+                && settings->userApplets.autoshow[i]) // User permits this applet to autoshow
+            {
+                Tile *t = userTiles.at(settings->userTiles.focused); // Get focused tile
+                if (t->getAssignedApplet())                          // Tile can be momentarily applet-less (layout changes)
+                    t->getAssignedApplet()->sendToBackground();      // Background whichever applet is already on the tile
+                t->assignApplet(a);                                  // Assign our new applet to tile
+                a->bringToForeground();                              // Foreground our new applet
 
-            // Check if autoshown applet shows the same information as notification intended to
-            // In this case, we can dismiss the notification before it is shown
-            // Note: we are re-running the approval process. This normally occurs when the notification is initially triggered.
-            if (notificationApplet->isForeground() && !notificationApplet->isApproved())
-                notificationApplet->dismiss();
+                // Check if autoshown applet shows the same information as notification intended to
+                // In this case, we can dismiss the notification before it is shown
+                // Note: we are re-running the approval process. This normally occurs when the notification is initially
+                // triggered.
+                if (notificationApplet->isForeground() && !notificationApplet->isApproved())
+                    notificationApplet->dismiss();
 
-            break; // One autoshow only! Avoid conflicts
+                return; // One autoshow only! Avoid conflicts
+            }
         }
     }
 }
@@ -679,6 +759,7 @@ void InkHUD::WindowManager::createSystemApplets()
     // Battery and notifications *behind* the menu
     addSystemApplet("Notification", new NotificationApplet, new Tile);
     addSystemApplet("BatteryIcon", new BatteryIconApplet, new Tile);
+    // (On T_DECK_MAX, BatteryIcon also draws the sleep-UX "asleep" moon in its tile)
     if (inkhud->hasTouchEnabledProvider())
         addSystemApplet("TouchStatus", new TouchStatusApplet, new Tile);
 
@@ -710,22 +791,43 @@ void InkHUD::WindowManager::placeSystemTiles()
 
     const uint16_t batteryIconHeight = Applet::getHeaderHeight() - 2 - 2;
     const uint16_t batteryIconWidth = batteryIconHeight * 1.8;
+#if defined(T_DECK_MAX)
+    // Widened corner tile for the right-aligned indicator cluster
+    // [lock][vib][dbg][ant][GPS][moon][battery]: six extra square slots left of the battery. The
+    // applet resizes the tile to its occupied span each render (preRender), so this is only the
+    // initial (maximum) footprint.
+    const uint16_t cornerSlotWidth = batteryIconHeight + 2; // square slot = tile height
+    inkhud->getSystemApplet("BatteryIcon")
+        ->getTile()
+        ->setRegion(inkhud->width() - batteryIconWidth - 1 - 6 * cornerSlotWidth, // x
+                    1,                                                            // y
+                    batteryIconWidth + 1 + 6 * cornerSlotWidth,                   // width
+                    batteryIconHeight + 2);                                       // height
+#else
     inkhud->getSystemApplet("BatteryIcon")
         ->getTile()
         ->setRegion(inkhud->width() - batteryIconWidth - 1, // x
                     1,                                      // y
                     batteryIconWidth + 1,                   // width
                     batteryIconHeight + 2);                 // height
+#endif
 
     if (inkhud->hasTouchEnabledProvider()) {
         const uint16_t touchStatusH = Applet::fontSmall.lineHeight() + 4;
         inkhud->getSystemApplet("TouchStatus")
             ->getTile()
             ->setRegion(0, inkhud->height() - touchStatusH, inkhud->width(), touchStatusH);
+#if defined(T_DECK_MAX)
+        // Touch is deliberately default-OFF on this board (Hardware-menu toggle, physical keyboard
+        // is primary): a permanent "TOUCH OFF" bar would just burn screen space. State is visible
+        // in the menu instead.
+        inkhud->getSystemApplet("TouchStatus")->sendToBackground();
+#else
         if (inkhud->isTouchEnabled())
             inkhud->getSystemApplet("TouchStatus")->sendToBackground();
         else
             inkhud->getSystemApplet("TouchStatus")->bringToForeground();
+#endif
     }
 
     // Note: the tiles of placeholder and menu applets are manipulated specially

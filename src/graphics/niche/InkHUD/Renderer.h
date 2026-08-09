@@ -44,6 +44,9 @@ class Renderer : protected concurrency::OSThread
     // Wait for an update to complete
     void awaitUpdate();
 
+    // Is a display update queued (requested/forced, not yet rendered) or currently running on the panel?
+    bool updatePending() { return requested || forced || (driver && driver->busy()); }
+
     // Receives pixel output from an applet (via a tile, which translates the coordinates)
     void handlePixel(int16_t x, int16_t y, Color c);
 
@@ -87,6 +90,12 @@ class Renderer : protected concurrency::OSThread
     bool requested = false;
     bool forced = false;
     bool renderAll = false;
+
+#if defined(T_DECK_MAX)
+    // Last time a render reached the glass while the screen was asleep (stamped in render(),
+    // including the sleep-entry moon stamp). Paces the asleep refresh window in runOnce().
+    uint32_t lastSleepRenderMs = 0;
+#endif
 
     // For convenience
     InkHUD *inkhud = nullptr;

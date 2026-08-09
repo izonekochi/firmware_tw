@@ -54,6 +54,15 @@ Observable<void *> notifyDeepSleep;
 /// Called to tell observers we are rebooting ASAP.  Must return 0
 Observable<void *> notifyReboot;
 
+#if defined(T_DECK_MAX)
+/// T-Deck Max InkHUD sleep-UX screen on/off edge (see sleep.h)
+Observable<bool> notifyScreenPower;
+/// Quick sleep: last user-activity stamp while awake (see sleep.h)
+volatile uint32_t tdeckMaxLastWakeActivityMs = 0;
+// Interactive-nap window deadline (see sleep.h)
+volatile uint32_t tdeckMaxKbWakeUntilMs = 0;
+#endif
+
 #ifdef ARCH_ESP32
 /// Called to tell observers that light sleep is about to begin
 Observable<void *> notifyLightSleep;
@@ -403,6 +412,21 @@ void doDeepSleep(uint32_t msecToWake, bool skipPreflight = false, bool skipSaveN
  *
  * Returns (after restoring hw state) when the user presses a button or we get a LoRa interrupt
  */
+// Cumulative light-sleep residency: total ms actually spent inside esp_light_sleep_start and the
+// number of times it returned. On-device power diagnostics (e.g. the InkHUD SystemInfo applet)
+// derive sleep-duty % from these -- serial monitoring can't observe sleep behavior (USB is either
+// a hold-awake or dies across LS), so the counters are the field-visible ground truth.
+uint32_t lightSleepMsTotal = 0;
+uint32_t lightSleepWakes = 0;
+
+// Nap profile: the AWAKE gap between consecutive light sleeps (wake -> service -> re-sleep).
+// Distinguishes "packet naps are efficient" from "something stretches every wake". Gaps over
+// 60s are user sessions (screen on), not naps, and are excluded. Field-read via SystemInfo.
+uint32_t lightSleepNapCount = 0;
+uint32_t lightSleepNapMsSum = 0;
+uint32_t lightSleepNapMsMax = 0;
+static uint32_t lsLastExitMs = 0;
+
 esp_sleep_wakeup_cause_t doLightSleep(uint64_t sleepMsec) // FIXME, use a more reasonable default
 {
     // LOG_DEBUG("Enter light sleep");
@@ -455,6 +479,30 @@ esp_sleep_wakeup_cause_t doLightSleep(uint64_t sleepMsec) // FIXME, use a more r
 #ifdef KB_INT
     gpio_wakeup_enable((gpio_num_t)KB_INT, GPIO_INTR_LOW_LEVEL);
 #endif
+#if defined(T_DECK_MAX) && defined(KB_IRQ_PIN)
+    // Interactive-nap window: for a short period after a BOOT wake / the last keystroke the
+    // TCA8418 INT line is armed as a light-sleep wake source, so typing works while the CPU
+    // naps between keystrokes (the screen stays logically ON, no "asleep" indicator). Outside
+    // the window the keyboard cannot wake the device (pocket-safe) - the variant deliberately
+    // names the pin KB_IRQ_PIN so the unconditional KB_INT arming above never applies here.
+    // The TCA8418 drain path clears INT_STAT (TDeckMaxTKeyboard::trigger), so the line is
+    // released between events; a key landing just before sleep entry holds it LOW and simply
+    // wakes us straight back - no keystroke is lost to the race.
+    {
+        const int32_t kbWindowLeftMs = (int32_t)(tdeckMaxKbWakeUntilMs - millis());
+        if (kbWindowLeftMs > 0) {
+            gpio_wakeup_enable((gpio_num_t)KB_IRQ_PIN, GPIO_INTR_LOW_LEVEL);
+            // Cap the nap at the window remainder: threads freeze during light sleep, so
+            // without this the expiry pass (moon stamp + keyboard disarm, TDeckMaxIdleSleep-
+            // Thread) would wait for the next LoRa/120s-timer wake - the moon showed late and
+            // the keyboard stayed wake-armed past its window. The +250ms slack guarantees the
+            // deadline has passed on wake (a hair-early wake would just micro-nap again).
+            const uint64_t kbCapUsec = ((uint64_t)kbWindowLeftMs + 250) * 1000ULL;
+            if (sleepUsec > kbCapUsec)
+                sleepUsec = kbCapUsec;
+        }
+    }
+#endif
 #ifdef BOARD_PCA9535_INT
     // Side-key interrupt line from PCA9535 expander (active low).
     gpio_wakeup_enable((gpio_num_t)BOARD_PCA9535_INT, GPIO_INTR_LOW_LEVEL);
@@ -493,7 +541,20 @@ esp_sleep_wakeup_cause_t doLightSleep(uint64_t sleepMsec) // FIXME, use a more r
     assert(res == ESP_OK);
 
     console->flush();
+    const uint32_t lsStartMs = millis(); // millis() runs on esp_timer: keeps counting through LS
+    if (lsLastExitMs != 0) {
+        const uint32_t napMs = (uint32_t)(lsStartMs - lsLastExitMs); // awake time since the last sleep ended
+        if (napMs < 60 * 1000UL) {                                   // longer = a user session, not a nap
+            lightSleepNapCount++;
+            lightSleepNapMsSum += napMs;
+            if (napMs > lightSleepNapMsMax)
+                lightSleepNapMsMax = napMs;
+        }
+    }
     res = esp_light_sleep_start();
+    lsLastExitMs = millis();
+    lightSleepMsTotal += (uint32_t)(lsLastExitMs - lsStartMs);
+    lightSleepWakes++;
     if (res != ESP_OK) {
         LOG_ERROR("esp_light_sleep_start result %d", res);
     }
@@ -505,6 +566,9 @@ esp_sleep_wakeup_cause_t doLightSleep(uint64_t sleepMsec) // FIXME, use a more r
 #endif
 #ifdef KB_INT
     gpio_wakeup_disable((gpio_num_t)KB_INT);
+#endif
+#if defined(T_DECK_MAX) && defined(KB_IRQ_PIN)
+    gpio_wakeup_disable((gpio_num_t)KB_IRQ_PIN); // idempotent when the nap window wasn't armed
 #endif
 #ifdef BOARD_PCA9535_INT
     gpio_wakeup_disable((gpio_num_t)BOARD_PCA9535_INT);
@@ -536,8 +600,20 @@ esp_sleep_wakeup_cause_t doLightSleep(uint64_t sleepMsec) // FIXME, use a more r
 
     if (cause == ESP_SLEEP_WAKEUP_GPIO) {
         LOG_INFO("Exit light sleep gpio");
-        // If we woke because of a GPIO, it's possible power needs to run to handle.
-        power->setIntervalFromNow(0);
+        // If we woke because of a GPIO, it's possible power needs to run to handle (PMU IRQ,
+        // button press). EXCEPT radio (DIO1) wakes: those fire for EVERY packet on the channel
+        // (>1000/hr on a busy mesh) and don't need a millisecond-fresh battery read -- the rush
+        // costs fuel-gauge/charger I2C plus up to a ~30ms one-shot ADC wait per wake, stretching
+        // every packet nap. The Power thread keeps its normal poll cadence for those. DIO1 is
+        // still HIGH here when the radio caused the wake (the IRQ is cleared later, by the radio
+        // thread); if it was already serviced we harmlessly fall back to rushing power.
+#if defined(LORA_DIO1) && (LORA_DIO1 != RADIOLIB_NC)
+        const bool radioWake = digitalRead(LORA_DIO1);
+#else
+        const bool radioWake = false;
+#endif
+        if (!radioWake)
+            power->setIntervalFromNow(0);
         runASAP = true;
     } else {
         LOG_INFO("Exit light sleep cause: %d", cause);

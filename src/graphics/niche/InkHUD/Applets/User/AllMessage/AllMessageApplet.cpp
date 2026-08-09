@@ -29,8 +29,22 @@ int InkHUD::AllMessageApplet::onReceiveTextMessage(const meshtastic_MeshPacket *
     if (getFrom(p) == nodeDB->getNodeNum())
         return 0;
 
+#if defined(T_DECK_MAX)
+    // Sleep-UX: while awake, behave exactly as upstream (autoshow + FAST). While asleep, don't
+    // switch applets (pocketed) and only refresh if THIS applet is currently displayed - and then
+    // synchronously (async=false) so it's on-screen before the imminent re-sleep.
+    if (inkhudScreenAwake) {
+        requestAutoshow();
+        requestUpdate(Drivers::EInk::UpdateTypes::FAST);
+    } else if (isForeground()) {
+        inkhud->forceUpdate(Drivers::EInk::UpdateTypes::FAST, false, false);
+    }
+#else
     requestAutoshow(); // Want to become foreground, if permitted
-    requestUpdate();   // Want to update display, if applet is foreground
+    // FAST explicitly (not UNSPECIFIED): an incoming message must never be promoted to a full-screen flash by accrued
+    // fast-refresh debt. Ghosting still heals via DisplayHealth's idle maintenance FULL, just not on message receipt.
+    requestUpdate(Drivers::EInk::UpdateTypes::FAST);
+#endif
 
     // Return zero: no issues here, carry on notifying other observers!
     return 0;
